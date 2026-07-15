@@ -1,0 +1,27 @@
+[Unit]
+Description=PVE-UPS - UPS shutdown appliance for Proxmox VE
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pveusv
+Group=pveusv
+Environment=PVE_USV_CONFIG=/etc/pve-usv/config.yaml
+Environment=PVE_USV_DB=/var/lib/pve-usv/events.db
+ExecStart=/opt/pve-usv/venv/bin/python -m app.main
+WorkingDirectory=/opt/pve-usv
+Restart=always
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/etc/pve-usv /var/lib/pve-usv
+ProtectHome=true
+# Safety nets: cap file descriptors/memory so a stray resource leak can never make the
+# web UI unreachable silently — the watchdog restart kicks in instead.
+LimitNOFILE=4096
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

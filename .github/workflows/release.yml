@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches __version__
+        run: |
+          VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' app/__init__.py)"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "Tag v$TAG does not match __version__ $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Build dist tarball
+        run: bash scripts/make-dist.sh --committed "$GITHUB_REF_NAME"
+
+      - name: Extract changelog section for the release body
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" {on=1; next}
+            on && /^## \[/ {exit}
+            on {print}
+          ' CHANGELOG.md > release-body.md
+          # fall back to a minimal body if the section is missing/empty
+          if ! grep -q "[^[:space:]]" release-body.md; then
+            echo "Release $GITHUB_REF_NAME" > release-body.md
+          fi
+
+      - name: Create GitHub release with assets
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-body.md
+          files: |
+            dist/pve-usv-*.tar.gz
+            install.sh

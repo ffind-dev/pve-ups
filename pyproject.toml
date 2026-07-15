@@ -1,0 +1,63 @@
+[project]
+name = "pve-usv"
+dynamic = ["version"]  # single source of truth: app/__init__.py __version__
+description = "PVE-UPS — UPS shutdown appliance for Proxmox VE: web-configured NUT alternative (RFC 1628 SNMP, multi-UPS, LXC)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Florian Finder" }]
+keywords = ["proxmox", "proxmox-ve", "ups", "snmp", "shutdown", "nut-alternative", "lxc", "rfc1628"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: System :: Power (UPS)",
+    "Topic :: System :: Systems Administration",
+]
+
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "pysnmp>=6.2",            # lextudio fork, async SNMP v1/v2c/v3
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "passlib[argon2]>=1.7",  # UI password hashing
+    "itsdangerous>=2.1",     # signed session cookies
+    "python-multipart>=0.0.9",  # multipart form parsing for the update upload
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "snmpsim>=1.1",          # simulate a UPS SNMP agent for testing
+]
+
+[project.urls]
+Homepage = "https://github.com/ffind-dev/pve-ups"
+Changelog = "https://github.com/ffind-dev/pve-ups/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ffind-dev/pve-ups/issues"
+
+[project.scripts]
+pve-usv = "app.main:run"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.setuptools.dynamic]
+version = { attr = "app.__version__" }
+
+[tool.setuptools.package-data]
+app = ["web/*", "web/i18n/*"]

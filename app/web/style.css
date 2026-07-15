@@ -1,0 +1,466 @@
+/* PVE-USV web UI — design system. Vanilla CSS, no build step, offline.
+   Copyright 2026 Florian Finder
+
+   Theming: :root is the dark default. [data-theme="light"] forces light;
+   [data-theme="auto"] follows the OS via prefers-color-scheme. Accent is neutral
+   (slate/inverted) — colour is reserved for status states (ok/warn/crit/info). */
+
+:root {
+  --bg: #0b1220;
+  --surface: #131c2b;
+  --surface-2: #1b2536;
+  --border: #283449;
+  --border-strong: #3a4866;
+  --text: #e6edf6;
+  --text-muted: #97a4b8;
+  --text-faint: #6b7890;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 12px 28px -16px rgba(0, 0, 0, .6);
+
+  /* neutral control accent (inverted) */
+  --primary-bg: #e8eef7;
+  --primary-fg: #0b1220;
+  --ring: rgba(125, 160, 220, .55);
+
+  /* status */
+  --ok: #34d399;        --ok-soft: rgba(52, 211, 153, .14);   --ok-bd: rgba(52, 211, 153, .38);
+  --warn: #fbbf24;      --warn-soft: rgba(251, 191, 36, .14); --warn-bd: rgba(251, 191, 36, .38);
+  --crit: #f87171;      --crit-soft: rgba(248, 113, 113, .15); --crit-bd: rgba(248, 113, 113, .4);
+  --info: #60a5fa;      --info-soft: rgba(96, 165, 250, .14); --info-bd: rgba(96, 165, 250, .38);
+
+  --r-sm: 6px; --r: 10px; --r-lg: 14px; --r-pill: 999px;
+  --maxw: 1120px;
+}
+
+/* Light palette — applied explicitly and (for "auto") when the OS prefers light. */
+:root[data-theme="light"] {
+  --bg: #f4f6fb;
+  --surface: #ffffff;
+  --surface-2: #f1f4f9;
+  --border: #e1e7f0;
+  --border-strong: #c6d0e0;
+  --text: #16202e;
+  --text-muted: #57637a;
+  --text-faint: #8893a6;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 14px 28px -18px rgba(16, 24, 40, .22);
+  --primary-bg: #16202e;
+  --primary-fg: #ffffff;
+  --ring: rgba(37, 99, 235, .35);
+  --ok: #059669;   --ok-soft: rgba(5, 150, 105, .12);  --ok-bd: rgba(5, 150, 105, .32);
+  --warn: #b45309; --warn-soft: rgba(217, 119, 6, .14); --warn-bd: rgba(217, 119, 6, .32);
+  --crit: #dc2626; --crit-soft: rgba(220, 38, 38, .1);  --crit-bd: rgba(220, 38, 38, .3);
+  --info: #2563eb; --info-soft: rgba(37, 99, 235, .1);  --info-bd: rgba(37, 99, 235, .3);
+}
+@media (prefers-color-scheme: light) {
+  :root[data-theme="auto"] {
+    --bg: #f4f6fb;
+    --surface: #ffffff;
+    --surface-2: #f1f4f9;
+    --border: #e1e7f0;
+    --border-strong: #c6d0e0;
+    --text: #16202e;
+    --text-muted: #57637a;
+    --text-faint: #8893a6;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 14px 28px -18px rgba(16, 24, 40, .22);
+    --primary-bg: #16202e;
+    --primary-fg: #ffffff;
+    --ring: rgba(37, 99, 235, .35);
+    --ok: #059669;   --ok-soft: rgba(5, 150, 105, .12);  --ok-bd: rgba(5, 150, 105, .32);
+    --warn: #b45309; --warn-soft: rgba(217, 119, 6, .14); --warn-bd: rgba(217, 119, 6, .32);
+    --crit: #dc2626; --crit-soft: rgba(220, 38, 38, .1);  --crit-bd: rgba(220, 38, 38, .3);
+    --info: #2563eb; --info-soft: rgba(37, 99, 235, .1);  --info-bd: rgba(37, 99, 235, .3);
+  }
+}
+
+* { box-sizing: border-box; }
+/* The HTML `hidden` attribute must always win over component display rules
+   (e.g. .nav-seg/.statuschip/button/.banner set display, which would otherwise
+   override the UA `[hidden]{display:none}` and reveal elements before login). */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.muted { color: var(--text-muted); font-weight: 400; }
+.faint { color: var(--text-faint); }
+small, .small { font-size: 12px; }
+.error { color: var(--crit); min-height: 16px; font-size: 13px; }
+code {
+  background: var(--surface-2); color: var(--text);
+  padding: 1px 6px; border-radius: var(--r-sm); font-size: .92em;
+  border: 1px solid var(--border);
+}
+a { color: var(--info); }
+.mono { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+
+/* ---------- App shell -------------------------------------------------------- */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 20px;
+  /* Solid, opaque background on purpose: a translucent + backdrop-filter bar jitters /
+     drifts while scrolling under position: sticky (compositing bug). */
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: .2px; }
+.brand .mark { width: 26px; height: 26px; color: var(--text); }
+.brand .ver { font-size: 11px; font-weight: 500; color: var(--text-faint); }
+.spacer { flex: 1 1 auto; }
+
+.nav-seg {
+  display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r);
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: transparent; color: var(--text-muted); border: none;
+  padding: 6px 14px; border-radius: 7px; cursor: pointer; font: inherit; font-size: 13px;
+  transition: background .12s, color .12s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+.statuschip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border-radius: var(--r-pill);
+  font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
+}
+.statuschip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+.statuschip.ok   { color: var(--ok);   border-color: var(--ok-bd);   background: var(--ok-soft); }
+.statuschip.ok   .dot { background: var(--ok); }
+.statuschip.warn { color: var(--warn); border-color: var(--warn-bd); background: var(--warn-soft); }
+.statuschip.warn .dot { background: var(--warn); }
+.statuschip.crit { color: var(--crit); border-color: var(--crit-bd); background: var(--crit-soft); }
+.statuschip.crit .dot { background: var(--crit); animation: pulse 1.4s infinite; }
+
+main { max-width: var(--maxw); margin: 22px auto 8px; padding: 0 18px; }
+
+/* ---------- Icons ------------------------------------------------------------ */
+.icon {
+  width: 18px; height: 18px; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.icon-lg { width: 22px; height: 22px; }
+
+/* ---------- Cards / sections ------------------------------------------------- */
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow);
+}
+.card-h {
+  display: flex; align-items: center; gap: 10px;
+  margin: -2px 0 14px;
+}
+.card-h h3 { margin: 0; font-size: 14px; font-weight: 650; display: flex; align-items: center; gap: 9px; }
+.card-h .actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+/* subtle "?" deep-link into the manual, pinned to the right of a card header */
+.card-h .doclink { margin-left: auto; display: inline-flex; color: var(--text-faint); }
+.card-h .doclink:hover { color: var(--text); }
+.card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 650; }
+.section-num {
+  display: inline-grid; place-items: center; width: 22px; height: 22px;
+  border-radius: 7px; background: var(--surface-2); border: 1px solid var(--border);
+  font-size: 12px; color: var(--text-muted); font-weight: 700;
+}
+.card.center { max-width: 380px; margin: 8vh auto; text-align: center; }
+.card.center .brand { justify-content: center; margin-bottom: 6px; }
+.card.center input { width: 100%; margin: 8px 0; }
+.card.sticky {
+  position: sticky; bottom: 12px; display: flex; align-items: center; gap: 12px;
+  border-color: var(--border-strong);
+}
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+
+/* ---------- Buttons ---------------------------------------------------------- */
+button, .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 8px 14px; font: inherit; font-size: 13px; font-weight: 550; cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s, transform .04s;
+}
+button:hover, .btn:hover { border-color: var(--border-strong); background: var(--surface); }
+button:active, .btn:active { transform: translateY(1px); }
+button:disabled, .btn:disabled { opacity: .55; cursor: not-allowed; }
+:where(button, .btn, .tab, input, select, a, summary):focus-visible {
+  outline: none; box-shadow: 0 0 0 3px var(--ring); border-radius: var(--r-sm);
+}
+
+/* variants (new names + legacy aliases used by app.js-generated markup) */
+.btn-primary, button.primary {
+  background: var(--primary-bg); color: var(--primary-fg); border-color: transparent; font-weight: 650;
+}
+.btn-primary:hover, button.primary:hover { filter: brightness(1.05); background: var(--primary-bg); }
+.btn-warn, button.warn {
+  background: var(--warn-soft); color: var(--warn); border-color: var(--warn-bd); font-weight: 650;
+}
+.btn-warn:hover, button.warn:hover { background: var(--warn-soft); border-color: var(--warn); }
+.btn-danger {
+  background: var(--crit-soft); color: var(--crit); border-color: var(--crit-bd); font-weight: 650;
+}
+.btn-ghost, button.ghost { background: transparent; border-color: var(--border); }
+.btn-ghost:hover, button.ghost:hover { background: var(--surface-2); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-icon { padding: 7px; border-radius: var(--r-sm); }
+a.btn { text-decoration: none; color: var(--text); }
+
+/* ---------- Forms ------------------------------------------------------------ */
+input:not([type="checkbox"]):not([type="radio"]), select {
+  width: 100%;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 8px 10px; font: inherit; font-size: 14px;
+  transition: border-color .12s, box-shadow .12s;
+}
+input[type="checkbox"], input[type="radio"] { width: auto; accent-color: var(--text); }
+input:hover, select:hover { border-color: var(--border-strong); }
+input::placeholder { color: var(--text-faint); }
+select {
+  appearance: none; padding-right: 30px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2397a4b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center;
+}
+label {
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 12px; color: var(--text-muted); font-weight: 500;
+}
+label input, label select { color: var(--text); font-weight: 400; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.row > label { flex: 1 1 160px; min-width: 150px; }
+hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+/* toggle switch (markup: label.switch > input[type=checkbox] + span) */
+.switch {
+  flex-direction: row; align-items: center; gap: 10px; margin: 10px 0;
+  color: var(--text); font-size: 13px; cursor: pointer; user-select: none;
+}
+.switch input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 38px; height: 22px; flex: 0 0 auto; margin: 0; padding: 0; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill); position: relative; transition: background .15s, border-color .15s;
+}
+.switch input[type="checkbox"]::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  border-radius: 50%; background: var(--text-faint); transition: transform .15s, background .15s;
+}
+.switch input[type="checkbox"]:checked { background: var(--text); border-color: var(--text); }
+.switch input[type="checkbox"]:checked::after { transform: translateX(16px); background: var(--bg); }
+
+/* ---------- Dashboard hero --------------------------------------------------- */
+.hero {
+  display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+}
+.hero-left { display: flex; flex-direction: column; gap: 10px; min-width: 220px; }
+.hero-state { display: flex; align-items: center; gap: 12px; }
+.hero-state .pill { font-size: 15px; padding: 6px 14px; }
+.hero-meta { color: var(--text-muted); font-size: 13px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.hero-right { margin-left: auto; display: flex; gap: 26px; flex-wrap: wrap; }
+.metric { display: flex; flex-direction: column; gap: 4px; min-width: 96px; }
+.metric .k { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .4px; }
+.metric .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* battery gauge */
+.gauge { height: 8px; border-radius: var(--r-pill); background: var(--surface-2); overflow: hidden; margin-top: 4px; }
+.gauge-fill { height: 100%; width: 0; border-radius: inherit; background: var(--ok); transition: width .4s ease, background .3s; }
+.gauge-fill.warn { background: var(--warn); }
+.gauge-fill.crit { background: var(--crit); }
+
+.live-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok); margin-right: 5px; vertical-align: middle; animation: pulse 1.8s infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* ---------- key/value stats -------------------------------------------------- */
+.stat { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.stat:last-child { border-bottom: none; }
+.stat > span { color: var(--text-muted); }
+.stat > b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ---------- Tables ----------------------------------------------------------- */
+.table-wrap { overflow-x: auto; border-radius: var(--r); }
+.table-wrap.scroll { max-height: 380px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+thead th {
+  position: sticky; top: 0; background: var(--surface);
+  color: var(--text-muted); font-weight: 600; font-size: 12px;
+  border-bottom: 1px solid var(--border-strong); white-space: nowrap;
+}
+tbody tr:hover { background: var(--surface-2); }
+tbody tr:last-child td { border-bottom: none; }
+table.mini td { border: none; padding: 5px 6px; }
+.events td:first-child { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.empty { color: var(--text-faint); text-align: center; padding: 18px; }
+
+/* ---------- Badges / pills --------------------------------------------------- */
+.pill, .badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: var(--r-pill);
+  font-size: 12px; font-weight: 650; line-height: 1.4;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
+}
+.pill::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .9;
+}
+.pill.ok   { color: var(--ok);   background: var(--ok-soft);   border-color: var(--ok-bd); }
+.pill.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
+.pill.crit { color: var(--crit); background: var(--crit-soft); border-color: var(--crit-bd); }
+.pill.muted { color: var(--text-muted); background: var(--surface-2); border-color: var(--border); }
+.chip {
+  display: inline-block; padding: 1px 7px; border-radius: var(--r-pill);
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+/* "★ dieser" marker — mirrors the ★ on the appliance host in the topology diagram */
+.chip.star { color: var(--text); border-color: var(--border-strong); font-weight: 650; }
+
+/* event severities -> dot badge */
+.sev { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; }
+.sev::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.sev-info { color: var(--text-muted); }
+.sev-warning { color: var(--warn); }
+.sev-critical { color: var(--crit); }
+
+/* ---------- Callouts (banner + warnnote unified) ----------------------------- */
+.banner, .callout {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; border-radius: var(--r); margin-bottom: 16px;
+  font-size: 13px; border: 1px solid var(--border); background: var(--surface-2);
+}
+.banner { font-weight: 600; }
+.banner .icon, .callout .icon { margin-top: 1px; }
+.banner.info, .callout.info { color: var(--info); background: var(--info-soft); border-color: var(--info-bd); }
+.banner.warn, .callout.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
+.banner.crit, .callout.crit, .callout.danger { color: var(--crit); background: var(--crit-soft); border-color: var(--crit-bd); }
+.warnnote {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin: 12px 0 0; padding: 10px 13px; font-size: 12px; line-height: 1.55;
+  color: var(--warn); background: var(--warn-soft); border: 1px solid var(--warn-bd); border-radius: var(--r);
+}
+.help { color: var(--text-muted); font-size: 12px; margin: 8px 0 0; line-height: 1.55; }
+
+/* ---------- Collapsible (details) -------------------------------------------- */
+details { border-top: 1px solid transparent; }
+details > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 650;
+  padding: 2px 0;
+}
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before {
+  content: ""; width: 16px; height: 16px; flex: 0 0 auto;
+  background: center / contain no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2397a4b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='9 18 15 12 9 6'/%3E%3C/svg%3E");
+  transition: transform .15s;
+}
+details[open] > summary { margin-bottom: 14px; }
+details[open] > summary::before { transform: rotate(90deg); }
+
+/* ---------- Multi-UPS: dashboard cards --------------------------------------- */
+.ups-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.ups-card { margin-bottom: 0; border-left: 4px solid var(--border-strong); }
+/* slim header: coloured battery icon + name (left), a small status icon (right).
+   No reachability pill — status is conveyed by colour + icon and the coloured left border.
+   The battery icon lives inside the h3 (a flex row) so it stays centred with the title. */
+.ups-card .card-h { align-items: center; gap: 9px; }
+.ups-card .batt-ic { color: var(--text-muted); }
+.ups-card .stat-ic { display: inline-flex; margin-left: auto; }
+.ups-card .stat-ic.ok { color: var(--ok); }
+.ups-card .stat-ic.warn { color: var(--warn); }
+.ups-card .stat-ic.crit { color: var(--crit); }
+.ups-card.is-ok { border-left-color: var(--ok); }
+.ups-card.is-ok .batt-ic { color: var(--ok); }
+.ups-card.is-batt { border-left-color: var(--warn); }
+.ups-card.is-batt .batt-ic { color: var(--warn); }
+.ups-card.is-trig { border-left-color: var(--crit); }
+.ups-card.is-trig .batt-ic { color: var(--crit); }
+.ups-card.is-unreach { border-left-color: var(--text-faint); }
+.ups-card.is-unreach .batt-ic { color: var(--text-faint); }
+/* slim source label (mirrors pill colours without the background/dot) */
+.src.ok { color: var(--ok); }
+.src.warn { color: var(--warn); }
+.src.muted { color: var(--text-muted); }
+.crit-text { color: var(--crit); }
+
+/* ---------- Config cards: collapsible UPS + Host editors ---------------------- */
+/* breathing room between the section help text and the first card */
+#upsList, #hostRows { margin-top: 14px; }
+.ups-cfg, .host-cfg { border: 1px solid var(--border); border-radius: var(--r); padding: 14px; margin-bottom: 12px; background: var(--surface-2); }
+.ups-cfg .u_over { margin-top: 6px; }
+/* card summary header (the generic details>summary rule supplies the chevron + layout) */
+.cfg-head .icon { color: var(--text-muted); }
+.cfg-head .cfg-sub { color: var(--text-muted); font-weight: 400; font-size: 12px; }
+.cfg-label { display: block; font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 5px; }
+.feedsblock { margin-bottom: 12px; }
+.hostflags { align-items: flex-end; }
+.hostflags .h_order { max-width: 110px; }
+.chkline { flex-direction: row; align-items: center; gap: 7px; flex: 0 0 auto; color: var(--text); }
+.feedchk { display: inline-flex; align-items: center; gap: 5px; margin: 2px 12px 2px 0; font-size: 13px; white-space: nowrap; }
+.feedchk input { width: auto; }
+
+/* ---------- Multi-UPS: topology diagram -------------------------------------- */
+.topo-wrap { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 8px; }
+svg.topo { display: block; width: 100%; }
+/* legend under the topology diagram: explains the ★ marker and line colours */
+.topo-legend {
+  margin: 10px 0 0; font-size: 12px; color: var(--text-muted);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+}
+.topo-legend .lg-star { color: var(--text); font-weight: 700; }
+.topo-legend .lg-sep { color: var(--text-faint); }
+.topo-legend .lg-line {
+  display: inline-block; width: 18px; height: 0; vertical-align: middle; margin-right: 1px;
+  border-top: 2px solid var(--border-strong);
+}
+.topo-legend .lg-line.ok { border-color: var(--ok); }
+.topo-legend .lg-line.warn { border-color: var(--warn); }
+.topo-legend .lg-line.crit { border-color: var(--crit); border-top-width: 2.5px; }
+.topo-legend .lg-line.muted { border-top-style: dashed; border-color: var(--text-faint); }
+.topo-line { fill: none; stroke: var(--border-strong); stroke-width: 2; }
+.topo-line.ok { stroke: var(--ok); }
+.topo-line.warn { stroke: var(--warn); }
+.topo-line.crit { stroke: var(--crit); stroke-width: 2.5; }
+.topo-line.muted { stroke: var(--text-faint); stroke-dasharray: 4 3; }
+.topo-node rect { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.5; }
+.topo-node text { fill: var(--text); font-size: 13px; }
+.topo-node.host rect { fill: var(--surface-2); }
+.topo-node.is-ok rect { stroke: var(--ok); }
+.topo-node.is-warn rect { stroke: var(--warn); }
+.topo-node.is-crit rect { stroke: var(--crit); stroke-width: 2; }
+.topo-node.is-muted rect { stroke: var(--text-faint); }
+/* hover highlight: emphasise the hovered node, its lines and the opposite nodes */
+.topo-node { cursor: pointer; }
+svg.topo .topo-line, svg.topo .topo-node { transition: opacity .12s; }
+svg.topo.hover-active .topo-line:not(.hl) { opacity: .1; }
+svg.topo.hover-active .topo-node:not(.hl) { opacity: .25; }
+svg.topo .topo-line.hl { stroke-width: 3.5; }
+svg.topo .topo-node.hl rect { stroke-width: 2.5; stroke: var(--text); }
+svg.topo .topo-node.hl.is-crit rect { stroke: var(--crit); }
+svg.topo .topo-node.hl.is-warn rect { stroke: var(--warn); }
+
+/* ---------- Footer ----------------------------------------------------------- */
+footer { max-width: var(--maxw); margin: 20px auto 28px; padding: 0 18px; color: var(--text-faint); font-size: 12px; text-align: center; }
+
+/* ---------- Responsive ------------------------------------------------------- */
+@media (max-width: 640px) {
+  .topbar { gap: 10px; padding: 10px 14px; }
+  main { padding: 0 12px; }
+  .hero-right { margin-left: 0; gap: 18px; }
+  .nav-seg { order: 3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

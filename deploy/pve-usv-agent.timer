@@ -1,0 +1,15 @@
+# Drains the agent job queue on a fixed cadence. A timer is immune to the inotify
+# edge-trigger fragility of pve-usv-agent.path (which can miss re-triggers), so queued
+# update/NTP jobs are always processed even if the .path unit didn't fire.
+# Copyright 2026 Florian Finder
+[Unit]
+Description=PVE-UPS deploy agent timer (drain update/NTP queue)
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=20s
+Persistent=true
+Unit=pve-usv-agent.service
+
+[Install]
+WantedBy=timers.target

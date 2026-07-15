@@ -1,0 +1,14 @@
+# Privileged (root) applier for update + NTP jobs. Oneshot, fired by pve-usv-agent.path.
+# Copyright 2026 Florian Finder
+[Unit]
+Description=PVE-UPS deploy agent (privileged update/NTP applier)
+# Never let a burst of triggers (path + timer + several uploads) push the unit into a
+# "start-limit-hit" failed state where it would stop processing jobs entirely.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# Run via `bash <script>` instead of executing directly: the file's executable bit
+# becomes irrelevant. Tarballs from a repo checked out on Windows lose the x-bit
+# (git 100644), which would otherwise cause 203/EXEC "Permission denied" after updates.
+ExecStart=/bin/bash /opt/pve-usv/deploy/pve-usv-agent.sh

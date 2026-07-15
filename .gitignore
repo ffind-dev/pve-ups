@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# Local dev runtime state (never commit secrets/config)
+dev-config.yaml
+dev-events.db
+*.db
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Internal testing tool, not part of the public project
+simulator/

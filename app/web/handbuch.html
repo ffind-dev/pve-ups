@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<!-- Copyright 2026 Florian Finder -->
+<!-- PVE-UPS Benutzerhandbuch (deutsch) — eigenständige, offlinefähige HTML-Datei.
+     Kann direkt (file://) geöffnet oder im WebUI hinter dem ?-Icon aufgerufen werden.
+     Styling ist hier bewusst INLINE (kopierte Theme-Variablen aus style.css), damit die
+     Datei standalone funktioniert. Bei UI-Änderungen Theme/Änderungsverlauf hier UND in
+     manual.html (englische Ausgabe) mitpflegen; die Anker-IDs beider Dateien müssen
+     identisch bleiben (Deep-Links aus dem WebUI). -->
+<html lang="de" data-theme="auto">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PVE-UPS — Benutzerhandbuch</title>
+  <style>
+    /* ---- Theme (kopiert aus app/web/style.css) ---- */
+    :root {
+      --bg: #0b1220; --surface: #131c2b; --surface-2: #1b2536;
+      --border: #283449; --border-strong: #3a4866;
+      --text: #e6edf6; --text-muted: #97a4b8; --text-faint: #6b7890;
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 12px 28px -16px rgba(0,0,0,.6);
+      --ok: #34d399;   --ok-soft: rgba(52,211,153,.14);  --ok-bd: rgba(52,211,153,.38);
+      --warn: #fbbf24; --warn-soft: rgba(251,191,36,.14); --warn-bd: rgba(251,191,36,.38);
+      --crit: #f87171; --crit-soft: rgba(248,113,113,.15); --crit-bd: rgba(248,113,113,.4);
+      --info: #60a5fa; --info-soft: rgba(96,165,250,.14); --info-bd: rgba(96,165,250,.38);
+      --r-sm: 6px; --r: 10px; --r-lg: 14px; --r-pill: 999px; --maxw: 1120px;
+    }
+    :root[data-theme="light"] {
+      --bg: #f4f6fb; --surface: #ffffff; --surface-2: #f1f4f9;
+      --border: #e1e7f0; --border-strong: #c6d0e0;
+      --text: #16202e; --text-muted: #57637a; --text-faint: #8893a6;
+      --shadow: 0 1px 2px rgba(16,24,40,.06), 0 14px 28px -18px rgba(16,24,40,.22);
+      --ok: #059669;   --ok-soft: rgba(5,150,105,.12);  --ok-bd: rgba(5,150,105,.32);
+      --warn: #b45309; --warn-soft: rgba(217,119,6,.14); --warn-bd: rgba(217,119,6,.32);
+      --crit: #dc2626; --crit-soft: rgba(220,38,38,.1);  --crit-bd: rgba(220,38,38,.3);
+      --info: #2563eb; --info-soft: rgba(37,99,235,.1);  --info-bd: rgba(37,99,235,.3);
+    }
+    @media (prefers-color-scheme: light) {
+      :root[data-theme="auto"] {
+        --bg: #f4f6fb; --surface: #ffffff; --surface-2: #f1f4f9;
+        --border: #e1e7f0; --border-strong: #c6d0e0;
+        --text: #16202e; --text-muted: #57637a; --text-faint: #8893a6;
+        --shadow: 0 1px 2px rgba(16,24,40,.06), 0 14px 28px -18px rgba(16,24,40,.22);
+        --ok: #059669;   --ok-soft: rgba(5,150,105,.12);  --ok-bd: rgba(5,150,105,.32);
+        --warn: #b45309; --warn-soft: rgba(217,119,6,.14); --warn-bd: rgba(217,119,6,.32);
+        --crit: #dc2626; --crit-soft: rgba(220,38,38,.1);  --crit-bd: rgba(220,38,38,.3);
+        --info: #2563eb; --info-soft: rgba(37,99,235,.1);  --info-bd: rgba(37,99,235,.3);
+      }
+    }
+
+    /* ---- Basis ---- */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text);
+      font-size: 14px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--info); }
+    code {
+      background: var(--surface-2); color: var(--text);
+      padding: 1px 6px; border-radius: var(--r-sm); font-size: .92em;
+      border: 1px solid var(--border);
+    }
+    pre {
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: var(--r); padding: 12px 14px; overflow-x: auto; font-size: 12.5px;
+      line-height: 1.5;
+    }
+    pre code { background: none; border: none; padding: 0; }
+    .muted { color: var(--text-muted); }
+
+    /* ---- Topbar (wie im WebUI) ---- */
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; gap: 14px;
+      padding: 10px 20px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: .2px; }
+    .brand .mark { width: 24px; height: 24px; color: var(--text); }
+    .brand .sub { font-size: 12px; font-weight: 500; color: var(--text-faint); }
+    .spacer { flex: 1 1 auto; }
+    .icon { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor;
+            stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-lg { width: 22px; height: 22px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
+      background: transparent; color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--r-sm);
+      padding: 6px 12px; font-size: 13px; font-weight: 550; cursor: pointer;
+      transition: background .12s, border-color .12s;
+    }
+    .btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
+
+    /* ---- Layout: TOC + Inhalt ---- */
+    .wrap {
+      max-width: var(--maxw); margin: 22px auto 40px; padding: 0 18px;
+      display: grid; grid-template-columns: 230px 1fr; gap: 28px; align-items: start;
+    }
+    nav.toc {
+      position: sticky; top: 70px; align-self: start;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r-lg); padding: 14px; box-shadow: var(--shadow);
+      font-size: 13px;
+    }
+    nav.toc h2 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase;
+                 letter-spacing: .5px; color: var(--text-faint); }
+    nav.toc ol { list-style: none; margin: 0; padding: 0; counter-reset: toc; }
+    nav.toc li { counter-increment: toc; margin: 2px 0; }
+    nav.toc a { display: block; padding: 5px 8px; border-radius: var(--r-sm);
+                color: var(--text-muted); text-decoration: none; }
+    nav.toc a::before { content: counter(toc) ". "; color: var(--text-faint); }
+    nav.toc a:hover { background: var(--surface-2); color: var(--text); }
+
+    main { min-width: 0; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
+      padding: 22px 24px; margin-bottom: 18px; box-shadow: var(--shadow);
+    }
+    .card.intro { background: var(--surface-2); }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    h2.sec { font-size: 17px; margin: 0 0 14px; display: flex; align-items: baseline; gap: 10px; }
+    h2.sec .n {
+      display: inline-grid; place-items: center; min-width: 24px; height: 24px;
+      border-radius: 7px; background: var(--surface-2); border: 1px solid var(--border);
+      font-size: 12px; color: var(--text-muted); font-weight: 700;
+    }
+    h3 { font-size: 14px; margin: 18px 0 8px; }
+    p { margin: 8px 0; }
+    ul, ol.steps { margin: 8px 0; padding-left: 22px; }
+    li { margin: 4px 0; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border);
+             vertical-align: top; }
+    thead th { color: var(--text-muted); font-weight: 600; font-size: 12px;
+               border-bottom: 1px solid var(--border-strong); }
+    tbody tr:last-child td { border-bottom: none; }
+
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px;
+            border-radius: var(--r-pill); font-size: 12px; font-weight: 650;
+            border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); }
+    .pill.ok   { color: var(--ok);   background: var(--ok-soft);   border-color: var(--ok-bd); }
+    .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
+    .pill.crit { color: var(--crit); background: var(--crit-soft); border-color: var(--crit-bd); }
+
+    .callout { display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--r);
+               margin: 14px 0; font-size: 13px; border: 1px solid var(--border);
+               background: var(--surface-2); }
+    .callout.info { color: var(--info); background: var(--info-soft); border-color: var(--info-bd); }
+    .callout.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
+    .callout b { color: inherit; }
+
+    .cl-ver { font-weight: 700; margin: 16px 0 4px; }
+    .cl-ver .date { font-weight: 500; color: var(--text-faint); font-size: 12px; margin-left: 8px; }
+
+    footer { max-width: var(--maxw); margin: 24px auto 36px; padding: 0 18px;
+             color: var(--text-faint); font-size: 12px; text-align: center; }
+
+    @media (max-width: 820px) {
+      .wrap { grid-template-columns: 1fr; }
+      nav.toc { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">
+      <svg class="mark icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3z"/></svg>
+      PVE-UPS <span class="sub">Benutzerhandbuch · v3.0.0</span>
+    </span>
+    <span class="spacer"></span>
+    <button id="themeBtn" class="btn" type="button" title="Theme umschalten">
+      <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      <span id="themeLbl">Auto</span>
+    </button>
+  </header>
+
+  <div class="wrap">
+    <nav class="toc">
+      <h2>Inhalt</h2>
+      <ol>
+        <li><a href="#was">Was ist PVE-UPS?</a></li>
+        <li><a href="#voraussetzungen">Voraussetzungen</a></li>
+        <li><a href="#installation">Installation &amp; Einrichtung</a></li>
+        <li><a href="#token">Proxmox API-Token</a></li>
+        <li><a href="#snmp">SNMP an der USV</a></li>
+        <li><a href="#logik">Funktion &amp; Logik</a></li>
+        <li><a href="#failsafe">Fail-safe &amp; Sonderfälle</a></li>
+        <li><a href="#ausloeser">Auslöser &amp; Schwellen</a></li>
+        <li><a href="#monitoring">Monitoring / REST</a></li>
+        <li><a href="#updates">Updates &amp; Betrieb</a></li>
+        <li><a href="#faq">Fehlerbehebung</a></li>
+        <li><a href="#changelog">Änderungsverlauf</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <div class="card intro">
+        <h1>PVE-UPS — Benutzerhandbuch</h1>
+        <p class="muted">Eine schlanke USV-Shutdown-Appliance für Proxmox VE: Sie überwacht
+        eine oder mehrere netzwerkfähige USVs per SNMP und fährt bei Stromausfall die
+        zugeordneten Proxmox-Hosts geordnet herunter — ganz ohne NUT und ohne von Hand
+        gepflegte Konfigurationsdateien. Dieses Handbuch richtet sich an technisch versierte
+        Administratoren, die das Produkt noch nicht kennen.</p>
+      </div>
+
+      <section class="card" id="was">
+        <h2 class="sec"><span class="n">1</span> Was ist PVE-UPS?</h2>
+        <p>PVE-UPS ersetzt klassische, herstellergebundene USV-Shutdown-Appliances (wie APC
+        PowerChute Network Shutdown) für Proxmox-Umgebungen. Die
+        Software läuft als ein einzelner, ressourcenschonender <b>unprivileged LXC</b>
+        (~256&nbsp;MB RAM) und benötigt nur ein Installer-Skript.</p>
+        <h3>Kernfunktionen</h3>
+        <ul>
+          <li>Überwachung <b>einer oder mehrerer USVs</b> mit SNMP-Netzwerkkarte
+          (Standard RFC&nbsp;1628) per <b>SNMP v1/v2c/v3</b> — reine Python-Implementierung.</li>
+          <li>Geordneter Shutdown der Hosts über ein <b>Proxmox API-Token</b> (Recht
+          <code>Sys.PowerMgmt</code>) — kein Root-SSH nötig.</li>
+          <li><b>Host↔USV-Zuordnung</b> mit Logik pro Host (UND/ODER) für redundante
+          Netzteile bzw. aufgeteilte Last, inkl. Schaubild im Webinterface.</li>
+          <li>Komplette Einrichtung über einen <b>Web-Wizard</b> mit Test-Buttons.</li>
+          <li>Weboberfläche auf <b>Englisch und Deutsch</b> — automatisch passend zur
+          Browsersprache.</li>
+          <li><b>Fail-safe:</b> ein SNMP-Verbindungsverlust löst standardmäßig nur Alarm aus,
+          keinen Shutdown.</li>
+          <li><b>Dry-Run-Modus</b> für eine gefahrlose Inbetriebnahme.</li>
+          <li>Lesender <b>REST/JSON-Status</b> für Monitoring (<code>/api/status</code>,
+          <code>/api/health</code>).</li>
+        </ul>
+      </section>
+
+      <section class="card" id="voraussetzungen">
+        <h2 class="sec"><span class="n">2</span> Voraussetzungen</h2>
+        <ul>
+          <li>Ein <b>Proxmox VE</b>-Host (Standalone — kein Cluster-/HA-Manager-Eingriff),
+          auf dem der LXC laufen kann. Typischerweise einer der zu schützenden Hosts.</li>
+          <li>Eine oder mehrere <b>USVs mit SNMP-Netzwerkkarte</b>, die die Standard-<b>RFC-1628-UPS-MIB</b>
+          per SNMP bereitstellen (herstellerunabhängig).</li>
+          <li>Netzwerkverbindung zwischen Appliance und USV (SNMP, Lesezugriff genügt) sowie
+          zur Proxmox-API der zu schützenden Hosts (HTTPS, Port 8006).</li>
+        </ul>
+      </section>
+
+      <section class="card" id="installation">
+        <h2 class="sec"><span class="n">3</span> Installation &amp; Einrichtung</h2>
+        <p>Die Installation erfolgt direkt aus der <b>Proxmox-Node-Shell</b> (Webinterface →
+        Node → <code>&gt;_ Shell</code>, als root). Das Skript lädt das aktuelle Release-Paket
+        von GitHub nach, entpackt es und legt den LXC an:</p>
+<pre><code>bash -c "$(curl -fsSL https://github.com/ffind-dev/pve-ups/releases/latest/download/install.sh)"
+# z.B. mit fester IP:
+curl -fsSL https://github.com/ffind-dev/pve-ups/releases/latest/download/install.sh | bash -s -- \
+  --ctid 950 --ip 10.0.0.50/24 --gateway 10.0.0.1 --hostname pve-usv</code></pre>
+        <p>Anschließend das Webinterface unter <code>http://&lt;container-ip&gt;:8080</code>
+        öffnen und den Wizard durchlaufen:</p>
+        <ol class="steps">
+          <li>UI-Passwort setzen.</li>
+          <li><b>USVs</b> anlegen (SNMP-Adresse/Version) und je USV mit „SNMP testen" prüfen.</li>
+          <li><b>Proxmox-Hosts</b> eintragen (API-Token, siehe Abschnitt 4) und „Verbindung
+          testen". Festlegen, welche USVs einen Host versorgen und nach welcher Logik
+          (UND/ODER).</li>
+          <li><b>Schwellwerte</b> setzen bzw. die Standardwerte übernehmen.</li>
+          <li>Optional den <b>Benachrichtigungs-Webhook</b> einrichten (HTTP-POST an ein
+          Ticket-/Chat-/Monitoring-System).</li>
+        </ol>
+        <div class="callout info">
+          <span>Solange der <b>Dry-Run</b> aktiv ist, wird nichts heruntergefahren — ideal
+          zum Testen. Erst wenn alles passt, den Dry-Run deaktivieren (Modus „SCHARF").</span>
+        </div>
+        <div class="callout warn">
+          <span>Läuft der LXC auf einem der geschützten Hosts, diesen in der Host-Liste als
+          <b>„Dieser Host"</b> markieren — er wird dann garantiert zuletzt heruntergefahren.</span>
+        </div>
+      </section>
+
+      <section class="card" id="token">
+        <h2 class="sec"><span class="n">4</span> Proxmox API-Token anlegen (pro Host)</h2>
+        <p>Auf jedem Proxmox-Host einmalig einen dedizierten Benutzer mit ausschließlich dem
+        Power-Recht und einen API-Token erzeugen:</p>
+<pre><code>pveum user add ups@pve
+pveum role add UpsShutdown -privs "Sys.PowerMgmt"
+pveum acl modify /nodes -user ups@pve -role UpsShutdown
+pveum user token add ups@pve shutdown --privsep 0</code></pre>
+        <p>Der letzte Befehl gibt <b>Token-ID</b> (<code>ups@pve!shutdown</code>) und
+        <b>Secret</b> aus. Beides im Wizard unter „Proxmox-Hosts" eintragen und mit „Test"
+        prüfen. Das Token ist jederzeit widerrufbar und ersetzt einen Root-SSH-Zugang.</p>
+      </section>
+
+      <section class="card" id="snmp">
+        <h2 class="sec"><span class="n">5</span> SNMP an der USV</h2>
+        <p>In der Weboberfläche der USV-Netzwerkkarte (meist unter <i>Network → SNMPv1</i>
+        bzw. <i>SNMPv3</i>) den Zugriff aktivieren und der Appliance-IP <b>Lesezugriff</b>
+        geben. Es wird nur die
+        Standard-RFC-1628-UPS-MIB gelesen (kein Schreibzugriff). Der Test im Wizard zeigt
+        sofort Quelle (Netz/Akku), Akkustatus, Restlaufzeit und Ladestand an.</p>
+      </section>
+
+      <section class="card" id="logik">
+        <h2 class="sec"><span class="n">6</span> Funktion &amp; Logik</h2>
+        <p>Die Engine fragt alle USVs parallel ab und wertet <b>jede USV unabhängig</b> aus.
+        Pro USV gibt es eine einfache Zustandsabfolge:</p>
+        <p>
+          <span class="pill ok">ONLINE</span> Netzbetrieb &nbsp;→&nbsp;
+          <span class="pill warn">ON_BATTERY</span> Stromausfall, USV im Akku &nbsp;→&nbsp;
+          <span class="pill crit">ausgelöst</span> sobald eine Schwelle greift
+        </p>
+        <h3>Welcher Host fährt herunter?</h3>
+        <p>Das entscheidet die Zuordnung jedes Hosts zu seinen USVs und seine Logik:</p>
+        <ul>
+          <li><b>UND</b> (<code>ups_policy = all</code>, Standard): Der Host fährt erst
+          herunter, wenn <i>alle</i> ihm zugeordneten USVs ausgelöst haben — exakt das
+          Verhalten für Server mit <b>redundanten Netzteilen</b> (je Netzteil eine USV).
+          Solange eine USV noch Strom liefert, bleibt der Host an.</li>
+          <li><b>ODER</b> (<code>ups_policy = any</code>): Der Host fährt herunter, sobald
+          <i>eine</i> zugeordnete USV auslöst — für aufgeteilte, nicht redundante Last.</li>
+        </ul>
+        <p>Mehrere fällige Hosts werden <b>geordnet</b> abgeschaltet. Der Host, der die
+        Appliance selbst trägt (<code>this_host</code>), kommt <b>zuletzt</b> dran, damit er
+        die übrigen noch abschalten kann. Tipp: den Appliance-Host an <i>alle</i> USVs
+        hängen, damit er zuverlässig zuletzt fällig wird.</p>
+        <p>Erholt sich eine erforderliche USV (Netz kehrt zurück), wird ein noch nicht
+        ausgeführter Shutdown wieder <b>abgebrochen</b> und der Zustand zurückgesetzt.</p>
+      </section>
+
+      <section class="card" id="failsafe">
+        <h2 class="sec"><span class="n">7</span> Fail-safe &amp; Sonderfälle</h2>
+        <p>Grundprinzip: Ein <b>Verlust der SNMP-Verbindung ist kein bestätigter
+        Stromausfall</b> — die USV antwortet vielleicht nur kurz nicht, oder ein Switch
+        dazwischen ist weg. Standardmäßig löst ein Kommunikationsverlust daher <b>nur
+        Alarm</b> aus, keinen Shutdown. Zwei optionale Einstellungen verfeinern das:</p>
+        <ul>
+          <li><b>Shutdown bei Verlust fortsetzen</b> (Standard an): Bricht SNMP ab,
+          <i>nachdem</i> bereits ein Akkubetrieb bestätigt war, läuft ein gestarteter
+          Akkubetrieb-Countdown auf der lokalen Uhr weiter und löst bei Ablauf aus. Nur dieser
+          zeitbasierte Auslöser überlebt den „blinden" Zustand (Restlaufzeit und Ladestand
+          sind ohne SNMP unbekannt). Hatte ein Auslöser (z.&nbsp;B. Battery-Low oder
+          Ladestand-Schwelle) dagegen <b>schon vor dem Verbindungsabriss</b> gegriffen,
+          bleibt er bestehen und wird nicht auf den Zeitcountdown zurückgestuft. Countdown
+          und ausgelöster Zustand überleben auch einen <b>Neustart des Dienstes</b>: beides
+          wird auf Platte gemerkt und beim Start wiederhergestellt (max. 24&nbsp;h alt).</li>
+          <li><b>Shutdown nach X Minuten reinem Verlust</b> (Standard aus): Behandelt einen
+          reinen Kommunikationsverlust (ohne vorher bestätigten Akkubetrieb) nach X Minuten
+          doch als Ausfall. Bewusstes Opt-in für Umgebungen, in denen ein längerer SNMP-Ausfall
+          als kritisch gilt.</li>
+        </ul>
+        <h3>Übersicht der Fälle</h3>
+        <table>
+          <thead><tr><th>Situation</th><th>Verhalten</th></tr></thead>
+          <tbody>
+            <tr><td>Netzbetrieb, alles ok</td><td>nichts (Anzeige „Netzbetrieb")</td></tr>
+            <tr><td>Akkubetrieb, ein Auslöser greift</td><td>Shutdown (Hosts geordnet, eigener zuletzt)</td></tr>
+            <tr><td>SNMP-Verlust im Netzbetrieb</td><td>nur Alarm, <b>kein</b> Shutdown</td></tr>
+            <tr><td>SNMP-Verlust während laufendem Akku-Countdown</td><td>Countdown läuft weiter, Shutdown bei Ablauf</td></tr>
+            <tr><td>SNMP-Verlust nach bereits ausgelöstem Trigger</td><td>Auslösung bleibt bestehen (keine Rückstufung)</td></tr>
+            <tr><td>Reiner SNMP-Verlust mit aktivem Opt-in</td><td>Shutdown nach Ablauf der Schwelle</td></tr>
+            <tr><td>Dry-Run aktiv</td><td>Auslöser wird erkannt + protokolliert, nichts wird heruntergefahren</td></tr>
+            <tr><td>Netz kehrt zurück</td><td>Zustand wird zurückgesetzt</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="card" id="ausloeser">
+        <h2 class="sec"><span class="n">8</span> Auslöser &amp; Schwellen</h2>
+        <p>Es genügt <b>eine</b> zutreffende Bedingung. Alle Werte sind im Wizard änderbar
+        (Feld leeren = Bedingung aus); Schwellen lassen sich global setzen und pro USV
+        überschreiben.</p>
+        <table>
+          <thead><tr><th>Bedingung</th><th>Standard</th></tr></thead>
+          <tbody>
+            <tr><td>Akkubetrieb länger als</td><td>600 s</td></tr>
+            <tr><td>Restlaufzeit unter</td><td>10 min</td></tr>
+            <tr><td>Ladestand unter</td><td>30 %</td></tr>
+            <tr><td>USV meldet <code>battery low/depleted</code></td><td>an</td></tr>
+          </tbody>
+        </table>
+        <p class="muted">Poll-Intervall: 30 s im Netzbetrieb, 8 s im Akkubetrieb.</p>
+        <p>Battery-Low, Restlaufzeit- und Ladestand-Schwelle lösen <b>sofort</b> aus —
+        unabhängig vom Zeit-Countdown. Der im Dashboard angezeigte Countdown betrifft
+        ausschließlich die Bedingung „Akkubetrieb länger als" und verschwindet, sobald die
+        USV ausgelöst hat. Ob ein Host daraufhin sofort herunterfährt, entscheidet seine
+        UND-/ODER-Logik (siehe <a href="#logik">Funktion &amp; Logik</a>): bei UND wartet
+        er, bis <i>alle</i> ihn versorgenden USVs ausgelöst haben.</p>
+      </section>
+
+      <section class="card" id="monitoring">
+        <h2 class="sec"><span class="n">9</span> Monitoring / REST</h2>
+        <p>Zwei lesende Endpunkte stehen <b>ohne Authentifizierung und ohne Secrets</b> zur
+        Verfügung:</p>
+        <ul>
+          <li><code>GET /api/status</code> — kompletter Zustand: Appliance, alle USVs, Hosts,
+          Shutdown-Status sowie die Ereignisse der letzten 48 h inkl. Severity-Zusammenfassung.</li>
+          <li><code>GET /api/health</code> — <code>200</code>, wenn die Engine läuft (mit
+          Version und Erreichbarkeit der USVs), sonst <code>503</code>. Ideal für
+          Uptime-Checks.</li>
+        </ul>
+<pre><code>curl http://&lt;container-ip&gt;:8080/api/status | jq
+# nur kritische Ereignisse der letzten 48 h:
+curl -s http://&lt;container-ip&gt;:8080/api/status \
+  | jq '.events[] | select(.severity=="critical")'</code></pre>
+        <p class="muted">Alle ändernden Endpunkte (Wizard speichern, Test-Shutdown) sind
+        passwortgeschützt.</p>
+        <div class="callout info">
+          <span>Ereignisprotokoll, Webhook-Nachrichten und API-Meldungen sind einheitlich
+          <b>englisch</b> — unabhängig von der gewählten Oberflächensprache. Das hält
+          Auswertung und Monitoring über Installationen hinweg konsistent.</span>
+        </div>
+      </section>
+
+      <section class="card" id="updates">
+        <h2 class="sec"><span class="n">10</span> Updates &amp; Betrieb</h2>
+        <p>Updates lassen sich direkt im Webinterface hochladen; ein schmaler, privilegierter
+        Begleitdienst wendet sie an (die App selbst bleibt unprivilegiert). Nach dem Upload
+        wird das Update typischerweise innerhalb weniger Sekunden eingespielt. Über das
+        Webinterface können zudem Konfiguration exportiert/importiert, NTP-Server und
+        Zeitzone gesetzt und das Ereignisprotokoll eingesehen/geleert werden.</p>
+        <p class="muted">Hinweis: Die Zeitzone (Abschnitt System, z.B. <code>Europe/Berlin</code>)
+        sollte gesetzt werden, da der Container sonst in UTC läuft. Die <b>Selbsttest-Uhrzeit</b>
+        des täglichen Proxmox-Verbindungstests gilt in dieser lokalen Zeit; nach dem Setzen der
+        Zeitzone startet der Dienst kurz neu.</p>
+        <h3>Update von Version 2.x auf 3.x</h3>
+        <p>Das jeweils aktuelle Release-Paket (<code>pve-usv-&lt;version&gt;.tar.gz</code>) von
+        der GitHub-Release-Seite herunterladen und im Webinterface unter „Update" hochladen —
+        die Konfiguration bleibt vollständig erhalten. Zwei Verhaltensänderungen: die
+        E-Mail-Benachrichtigung entfällt (ein evtl. konfigurierter SMTP-Eintrag wird beim
+        nächsten Speichern automatisch entfernt; der Webhook bleibt), und Ereignis-/
+        Webhook-Texte sind ab 3.0.0 englisch.</p>
+      </section>
+
+      <section class="card" id="faq">
+        <h2 class="sec"><span class="n">11</span> Fehlerbehebung</h2>
+        <h3>Update bleibt in der Warteschlange</h3>
+        <p>Bleibt ein hochgeladenes Update bei „⏳ In Warteschlange" stehen, ist der
+        Queue-Drainer auf dieser Instanz nicht aktiv. Das passiert einmalig bei Boxen, die aus
+        einer sehr alten Version aktualisiert wurden. Einmalig im Container ausführen
+        (aktiviert den Dienst dauerhaft):</p>
+<pre><code>pct exec &lt;CTID&gt; -- systemctl start pve-usv-agent.service
+# oder direkt im Container:
+systemctl start pve-usv-agent.service</code></pre>
+        <h3>USV nicht erreichbar / Alarm</h3>
+        <p>SNMP-Adresse, Version/Community bzw. v3-Credentials und die Firewall zwischen
+        Appliance und USV prüfen. Im Wizard „SNMP testen" zeigt die genaue Ursache. Ein
+        Kommunikationsverlust allein fährt nichts herunter (Fail-safe).</p>
+        <h3>Interne Namen: <code>pve-usv</code></h3>
+        <p>Der Produktname ist PVE-UPS, technisch heißen Dienst und Pfade aber weiterhin
+        <code>pve-usv</code> — also z.&nbsp;B. <code>systemctl status pve-usv</code>,
+        <code>/etc/pve-usv/config.yaml</code> und <code>/var/lib/pve-usv/</code>. Das ist
+        beabsichtigt und hält Updates bestehender Installationen kompatibel.</p>
+      </section>
+
+      <section class="card" id="changelog">
+        <h2 class="sec"><span class="n">12</span> Änderungsverlauf (Auszug)</h2>
+        <p class="muted">Vereinfachte, nutzersichtbare Highlights. Der vollständige technische
+        Verlauf steht im Changelog des GitHub-Repositories.</p>
+
+        <div class="cl-ver">3.0.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Erste öffentliche Veröffentlichung</b> auf GitHub unter dem Namen
+          <b>PVE-UPS</b> (Dienst-/Pfadnamen bleiben intern <code>pve-usv</code>).</li>
+          <li>Weboberfläche <b>zweisprachig</b>: Englisch (Standard) und Deutsch, automatisch
+          passend zur Browsersprache; Benutzerhandbuch in beiden Sprachen.</li>
+          <li>Ereignisprotokoll, Webhook-Nachrichten und API-Meldungen einheitlich
+          <b>englisch</b>.</li>
+          <li><b>E-Mail-Benachrichtigung entfernt</b> — der Webhook deckt Benachrichtigungen
+          ab; bestehende SMTP-Einträge werden beim Update automatisch verworfen.</li>
+          <li>Installation und Updates direkt über <b>GitHub-Releases</b> (Install-Einzeiler,
+          Update per Paket-Upload im Webinterface; von 2.x nahtlos möglich).</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <footer>© 2026 Florian Finder · PVE-UPS</footer>
+
+  <script>
+    // Theme aus der App übernehmen (gleiche localStorage-Quelle wie app.js).
+    // Reihenfolge der Umschaltung: auto -> light -> dark -> auto.
+    (function () {
+      var KEY = "pve-usv-theme";
+      var root = document.documentElement;
+      var lbl = document.getElementById("themeLbl");
+      var names = { auto: "Auto", light: "Hell", dark: "Dunkel" };
+      function apply(t) {
+        if (t !== "light" && t !== "dark") t = "auto";
+        root.setAttribute("data-theme", t);
+        if (lbl) lbl.textContent = names[t];
+      }
+      apply(localStorage.getItem(KEY) || "auto");
+      document.getElementById("themeBtn").addEventListener("click", function () {
+        var cur = localStorage.getItem(KEY) || "auto";
+        var next = cur === "auto" ? "light" : cur === "light" ? "dark" : "auto";
+        localStorage.setItem(KEY, next);
+        apply(next);
+      });
+    })();
+  </script>
+</body>
+</html>

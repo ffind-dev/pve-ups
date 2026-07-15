@@ -1,0 +1,11 @@
+# Triggers the privileged deploy agent when the unprivileged app queues a job
+# (update package or NTP change). Copyright 2026 Florian Finder
+[Unit]
+Description=PVE-UPS deploy agent trigger (update/NTP queue watch)
+
+[Path]
+DirectoryNotEmpty=/var/lib/pve-usv/agent/queue
+Unit=pve-usv-agent.service
+
+[Install]
+WantedBy=multi-user.target

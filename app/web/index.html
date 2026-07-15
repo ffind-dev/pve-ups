@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<!-- Copyright 2026 Florian Finder -->
+<!-- Static text is English (the fallback); data-i18n* attributes swap it to the active
+     language at load time (see i18n.js + i18n/<lang>.js). -->
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PVE-UPS</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- Inline icon sprite (offline, no external assets) -->
+  <svg width="0" height="0" hidden aria-hidden="true">
+    <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><circle cx="9" cy="6" r="2"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="15" cy="12" r="2"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="8" cy="18" r="2"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/><line x1="12" y1="2" x2="12" y2="12"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16"/><line x1="12" y1="8" x2="12.01" y2="8"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.2" y1="4.2" x2="5.6" y2="5.6"/><line x1="18.4" y1="18.4" x2="19.8" y2="19.8"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.2" y1="19.8" x2="5.6" y2="18.4"/><line x1="18.4" y1="5.6" x2="19.8" y2="4.2"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3z"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+    <symbol id="i-battery" viewBox="0 0 24 24"><rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><line x1="6" y1="11" x2="6" y2="13"/><line x1="10" y1="11" x2="10" y2="13"/><line x1="14" y1="11" x2="14" y2="13"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/></symbol>
+  </svg>
+
+  <header class="topbar">
+    <span class="brand">
+      <svg class="mark icon-lg"><use href="#i-shield"></use></svg>
+      PVE-UPS <span class="ver" id="version"></span>
+    </span>
+
+    <nav class="nav-seg" id="mainNav" hidden>
+      <button data-view="dashboard" class="tab active"><svg class="icon"><use href="#i-dashboard"></use></svg> <span data-i18n="nav.dashboard">Dashboard</span></button>
+      <button data-view="settings" class="tab"><svg class="icon"><use href="#i-settings"></use></svg> <span data-i18n="nav.settings">Settings</span></button>
+    </nav>
+
+    <span class="spacer"></span>
+
+    <span class="statuschip" id="navStatus" hidden><span class="dot"></span><span id="navStatusText">–</span></span>
+    <button id="themeBtn" class="btn-icon btn-ghost" title="Theme: automatic" aria-label="Toggle theme">
+      <svg class="icon"><use id="themeUse" href="#i-monitor"></use></svg>
+    </button>
+    <a href="/manual.html" data-manual="" target="_blank" rel="noopener" class="btn btn-icon btn-ghost" title="User manual" data-i18n-title="nav.manualTitle" aria-label="Help / user manual">
+      <svg class="icon"><use href="#i-help"></use></svg>
+    </a>
+    <button id="logoutBtn" class="btn-ghost btn-sm" hidden><svg class="icon"><use href="#i-logout"></use></svg> <span data-i18n="nav.logout">Log out</span></button>
+  </header>
+
+  <main>
+    <!-- LOGIN -->
+    <section id="login" class="card center" hidden>
+      <span class="brand"><svg class="mark icon-lg"><use href="#i-shield"></use></svg> PVE-UPS</span>
+      <h2 data-i18n="login.title">Sign in</h2>
+      <p class="muted" data-i18n="login.hint">Enter the UI password.</p>
+      <input type="password" id="loginPw" placeholder="Password" data-i18n-placeholder="login.pwPlaceholder" />
+      <button id="loginBtn" class="btn-primary" data-i18n="login.submit">Sign in</button>
+      <p class="error" id="loginErr"></p>
+    </section>
+
+    <!-- FIRST RUN: set password -->
+    <section id="firstrun" class="card center" hidden>
+      <span class="brand"><svg class="mark icon-lg"><use href="#i-shield"></use></svg> PVE-UPS</span>
+      <h2 data-i18n="firstrun.title">Initial setup</h2>
+      <p class="muted" data-i18n="firstrun.hint">Set a password for the web interface.</p>
+      <input type="password" id="newPw" placeholder="New password (min. 6 characters)" data-i18n-placeholder="firstrun.pwPlaceholder" />
+      <button id="setPwBtn" class="btn-primary" data-i18n="firstrun.submit">Set password &amp; start</button>
+      <p class="error" id="firstErr"></p>
+    </section>
+
+    <!-- DASHBOARD -->
+    <section id="dashboard" hidden>
+      <div id="banner" class="banner" hidden></div>
+
+      <!-- Per-UPS status cards (one per configured UPS) -->
+      <div id="d_ups_grid" class="ups-grid"></div>
+
+      <!-- Topology: which UPS feeds which host -->
+      <div class="card" id="d_topo_card" hidden>
+        <div class="card-h"><h3><svg class="icon"><use href="#i-bolt"></use></svg> <span data-i18n="topo.title">Power feed (UPS → host)</span></h3>
+          <a class="doclink" href="/manual.html#logik" data-manual="logik" target="_blank" rel="noopener" title="Read in the manual: How it works &amp; logic" data-i18n-title="topo.doc"><svg class="icon"><use href="#i-help"></use></svg></a></div>
+        <svg id="topoDiagramDash" class="topo" width="100%"></svg>
+        <p class="topo-legend">
+          <span class="lg-star">★</span> <span data-i18n="topo.legendStar">this host (appliance, shuts down last)</span>
+          <span class="lg-sep">·</span>
+          <span class="lg-line ok"></span> <span data-i18n="topo.mains">mains</span>
+          <span class="lg-line warn"></span> <span data-i18n="topo.battery">on battery</span>
+          <span class="lg-line crit"></span> <span data-i18n="topo.trig">shutdown triggered</span>
+          <span class="lg-line muted"></span> <span data-i18n="topo.unreach">unreachable</span>
+        </p>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <div class="card-h"><h3><svg class="icon"><use href="#i-power"></use></svg> <span data-i18n="dash.appliance">Appliance</span></h3>
+            <a class="doclink" href="/manual.html#logik" data-manual="logik" target="_blank" rel="noopener" title="Read in the manual: How it works &amp; logic" data-i18n-title="topo.doc"><svg class="icon"><use href="#i-help"></use></svg></a></div>
+          <div class="stat"><span data-i18n="dash.state">State</span><b id="d_state">–</b></div>
+          <div class="stat"><span data-i18n="dash.mode">Mode</span><b id="d_mode">–</b></div>
+          <div class="stat"><span data-i18n="dash.trig">Shutdown triggered</span><b id="d_trig">–</b></div>
+          <div class="stat"><span data-i18n="dash.reason">Reason</span><b id="d_reason">–</b></div>
+          <div class="stat"><span data-i18n="dash.countdown">Countdown</span><b id="d_countdown">–</b></div>
+          <div class="stat"><span data-i18n="dash.uptime">Uptime</span><b id="d_uptime">–</b></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h3><svg class="icon"><use href="#i-server"></use></svg> <span data-i18n="dash.hosts">Hosts</span></h3></div>
+          <div class="table-wrap"><table class="mini"><thead><tr>
+            <th data-i18n="dash.thHost">Host</th><th data-i18n="dash.thFeeds">Fed by</th><th data-i18n="dash.thStatus">Status</th><th data-i18n="dash.thError">Error</th>
+          </tr></thead><tbody id="d_hosts"></tbody></table></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">
+          <h3 data-i18n="dash.events">Events</h3>
+          <span class="actions">
+            <button id="clearLogBtn" class="btn-ghost btn-sm"
+              title="Irreversibly deletes all entries in the event log." data-i18n-title="dash.clearLogTitle">
+              <svg class="icon"><use href="#i-trash"></use></svg> <span data-i18n="dash.clearLog">Clear log</span></button>
+          </span>
+        </div>
+        <div class="table-wrap scroll">
+          <table class="events"><thead><tr><th data-i18n="dash.thTime">Time</th><th data-i18n="dash.thSeverity">Severity</th><th data-i18n="dash.thEvent">Event</th><th data-i18n="dash.thDetail">Detail</th></tr></thead>
+            <tbody id="d_events"></tbody></table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">
+          <h3 data-i18n="dash.actions">Actions</h3>
+          <span class="actions muted" id="actionMsg"></span>
+        </div>
+        <div class="row" style="margin:0">
+          <button id="testShutdownBtn" class="btn-warn"
+            title="Only logs the shutdown order of the hosts. Nothing is shut down." data-i18n-title="dash.testShutdownTitle">
+            <svg class="icon"><use href="#i-power"></use></svg> <span data-i18n="dash.testShutdown">Test shutdown (dry-run)</span></button>
+          <button id="resetBtn" class="btn-ghost"
+            title="Clears the internal trigger/alarm state after a test or alarm." data-i18n-title="dash.resetTitle">
+            <svg class="icon"><use href="#i-reset"></use></svg> <span data-i18n="dash.reset">Reset state</span></button>
+        </div>
+        <p class="help" data-i18n-html="dash.actionsHelp">
+          <b>Test shutdown:</b> simulates the shutdown order without effect.
+          <b>Reset state:</b> clears a test/alarm latch.
+        </p>
+      </div>
+    </section>
+
+    <!-- SETTINGS / WIZARD -->
+    <section id="settings" hidden>
+      <div class="card">
+        <div class="card-h"><h3 data-i18n="wiz.mode">Operating mode</h3></div>
+        <label class="switch"
+          title="Main safety switch: when on, the engine only logs and shuts nothing down." data-i18n-title="wiz.dryRunTitle">
+          <input type="checkbox" id="s_dry_run" />
+          <span data-i18n="wiz.dryRun">Dry-run (logs only, shuts nothing down)</span></label>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3><span class="section-num">1</span> <svg class="icon"><use href="#i-battery"></use></svg> <span data-i18n="wiz.ups">UPS devices (SNMP)</span></h3>
+          <a class="doclink" href="/manual.html#snmp" data-manual="snmp" target="_blank" rel="noopener" title="Read in the manual: SNMP on the UPS" data-i18n-title="wiz.upsDoc"><svg class="icon"><use href="#i-help"></use></svg></a></div>
+        <p class="help" data-i18n="wiz.upsHelp">Monitor one or more UPS devices via SNMP. For servers with redundant
+          power supplies use one UPS per feed — the mapping is done in step 2.
+          Optional per-UPS thresholds override the global values from step 3.</p>
+        <div id="upsList"></div>
+        <div class="row" style="margin-top:12px;align-items:center">
+          <button id="addUpsBtn" class="btn-ghost btn-sm" style="flex:0 0 auto" data-i18n="wiz.addUps">+ UPS</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3><span class="section-num">2</span> <svg class="icon"><use href="#i-server"></use></svg> <span data-i18n="wiz.hosts">Proxmox hosts</span></h3>
+          <a class="doclink" href="/manual.html#token" data-manual="token" target="_blank" rel="noopener" title="Read in the manual: Creating the Proxmox API token" data-i18n-title="wiz.hostsDoc"><svg class="icon"><use href="#i-help"></use></svg></a></div>
+        <p class="help" data-i18n-html="wiz.hostsHelp">API token with the <code>Sys.PowerMgmt</code> privilege. The host marked <span class="lg-star">★</span>
+          “This host” (the appliance) is shut down last.</p>
+        <div id="hostRows"></div>
+        <div class="row" style="margin-top:12px;align-items:center">
+          <button id="addHostBtn" class="btn-ghost btn-sm" style="flex:0 0 auto" data-i18n="wiz.addHost">+ Host</button>
+        </div>
+        <div class="topo-wrap">
+          <div class="card-h"><h3 style="font-size:14px" data-i18n="topo.diagram">Feed diagram</h3></div>
+          <svg id="topoDiagram" class="topo" width="100%"></svg>
+          <p class="topo-legend">
+            <span class="lg-star">★</span> <span data-i18n="topo.legendStar">this host (appliance, shuts down last)</span>
+          </p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3><span class="section-num">3</span> <span data-i18n="wiz.triggers">Triggers (thresholds)</span></h3>
+          <a class="doclink" href="/manual.html#ausloeser" data-manual="ausloeser" target="_blank" rel="noopener" title="Read in the manual: Triggers &amp; thresholds" data-i18n-title="wiz.triggersDoc"><svg class="icon"><use href="#i-help"></use></svg></a></div>
+        <p class="help" data-i18n="wiz.triggersHelp">One matching condition is enough. Empty field = condition disabled.</p>
+        <div class="row">
+          <label title="Trigger a shutdown after this many seconds on battery. Empty = off." data-i18n-title="th.onBatteryTitle"><span data-i18n="th.onBattery">On battery longer than (s)</span> <input id="th_on_battery_seconds" type="number" /></label>
+          <label title="Trigger a shutdown when the estimated runtime drops to this value or below. Empty = off." data-i18n-title="th.runtimeTitle"><span data-i18n="th.runtime">Runtime below (min)</span> <input id="th_runtime_below_minutes" type="number" /></label>
+          <label title="Trigger a shutdown when the charge drops to this percentage or below. Empty = off." data-i18n-title="th.chargeTitle"><span data-i18n="th.charge">Charge below (%)</span> <input id="th_charge_below_percent" type="number" /></label>
+        </div>
+        <label class="switch"
+          title="Shut down immediately when the UPS reports battery low/depleted." data-i18n-title="th.batteryLowTitle">
+          <input type="checkbox" id="th_on_battery_low" />
+          <span data-i18n="th.batteryLow">Immediately on UPS reporting “battery low/depleted”</span></label>
+        <div class="row">
+          <label title="Polling interval on mains." data-i18n-title="th.pollNormalTitle"><span data-i18n="th.pollNormal">Poll interval mains (s)</span> <input id="th_poll_interval_normal_s" type="number" /></label>
+          <label title="Polling interval while on battery." data-i18n-title="th.pollBatteryTitle"><span data-i18n="th.pollBattery">Poll interval battery (s)</span> <input id="th_poll_interval_battery_s" type="number" /></label>
+          <label title="Maximum time to wait for the Proxmox API per host." data-i18n-title="th.hostTimeoutTitle"><span data-i18n="th.hostTimeout">Host shutdown timeout (s)</span> <input id="th_host_shutdown_timeout_s" type="number" /></label>
+        </div>
+        <hr/>
+        <label class="switch"
+          title="Keep the running on-battery countdown when SNMP drops during an outage." data-i18n-title="th.keepShutdownTitle">
+          <input type="checkbox" id="th_keep_shutdown_on_comm_loss" />
+          <span data-i18n="th.keepShutdown">Do not abort the shutdown on connection loss while on battery</span></label>
+        <label title="Optional shutdown on a pure communication loss (overrides the fail-safe)." data-i18n-title="th.commLossTitle"><span data-i18n="th.commLoss">Shutdown on pure communication loss after (min)</span>
+          <input id="th_comm_loss_shutdown_after_min" type="number" placeholder="empty = off" data-i18n-placeholder="th.commLossPh" /></label>
+        <p class="warnnote">
+          <svg class="icon"><use href="#i-alert"></use></svg>
+          <span data-i18n-html="th.warn">Empty by default (fail-safe): an SNMP loss triggers <b>no</b>
+          shutdown, because it is usually a network/UPS defect and not a power outage.
+          Only set this when a prolonged communication loss should deliberately be treated
+          like an outage — the actual power state is unknown then.</span></p>
+      </div>
+
+      <div class="card">
+        <details>
+          <summary><span class="section-num">4</span> <span data-i18n="notif.title">Notifications</span> <span class="muted" data-i18n="notif.optional">(optional)</span></summary>
+          <label class="switch" title="Send an HTTP POST with the status JSON to a URL on every notable event." data-i18n-title="notif.webhookTitle"><input type="checkbox" id="webhook_enabled" /><span data-i18n="notif.webhook">Webhook</span></label>
+          <label title="Target URL for the webhook." data-i18n-title="notif.urlTitle"><span data-i18n="notif.url">URL</span> <input id="webhook_url" placeholder="https://..." /></label>
+        </details>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3><span class="section-num">5</span> <span data-i18n="sys.title">System</span></h3>
+          <a class="doclink" href="/manual.html#updates" data-manual="updates" target="_blank" rel="noopener" title="Read in the manual: Updates &amp; operation" data-i18n-title="sys.doc"><svg class="icon"><use href="#i-help"></use></svg></a></div>
+        <div class="row">
+          <label title="Time server for the appliance. Empty = leave the system default." data-i18n-title="sys.ntpTitle"><span data-i18n="sys.ntp">NTP server</span> <input id="ntp_server" placeholder="e.g. pool.ntp.org (empty = unchanged)" data-i18n-placeholder="sys.ntpPh" /></label>
+          <label title="Timezone of the appliance (IANA name). Empty = leave the system default." data-i18n-title="sys.tzTitle"><span data-i18n="sys.tz">Timezone</span> <input id="tz_timezone" placeholder="e.g. Europe/Berlin (empty = unchanged)" data-i18n-placeholder="sys.tzPh" /></label>
+        </div>
+        <label class="switch"
+          title="Checks once a day per host whether the API token still works." data-i18n-title="sys.selftestTitle">
+          <input type="checkbox" id="selftest_enabled" />
+          <span data-i18n="sys.selftest">Daily self-test of the Proxmox connection</span></label>
+        <div class="row">
+          <label title="Time of day (full hour, 0–23) at which the self-test runs." data-i18n-title="sys.selftestHourTitle"><span data-i18n="sys.selftestHour">Self-test time (hour 0–23)</span> <input id="selftest_hour" type="number" min="0" max="23" /></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3><svg class="icon"><use href="#i-download"></use></svg> <span data-i18n="backup.title">Backup &amp; transfer</span></h3></div>
+        <p class="help" data-i18n="backup.help">Save the configuration as a JSON file or restore it — ideal for reinstalls or migration.</p>
+        <div class="row" style="margin:0;align-items:center">
+          <button id="exportBtn" class="btn-ghost btn-sm" style="flex:0 0 auto"><svg class="icon"><use href="#i-download"></use></svg> <span data-i18n="backup.export">Export (JSON)</span></button>
+          <input type="file" id="importFile" accept="application/json,.json" hidden />
+          <button id="importBtn" class="btn-ghost btn-sm" style="flex:0 0 auto"><svg class="icon"><use href="#i-upload"></use></svg> <span data-i18n="backup.import">Import …</span></button>
+          <span class="muted" id="backupMsg"></span>
+        </div>
+        <p class="warnnote">
+          <svg class="icon"><use href="#i-alert"></use></svg>
+          <span data-i18n="backup.warn">The export file contains credentials in plain text
+          (SNMP community, API token). Store it safely!</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3><svg class="icon"><use href="#i-upload"></use></svg> <span data-i18n="upd.title">Update</span></h3>
+          <a class="doclink" href="/manual.html#updates" data-manual="updates" target="_blank" rel="noopener" title="Read in the manual: Updates &amp; operation" data-i18n-title="sys.doc"><svg class="icon"><use href="#i-help"></use></svg></a></div>
+        <p class="help"><span data-i18n="upd.current">Current version:</span> <b id="upd_version">–</b>.
+          <span data-i18n="upd.helpRest">Upload a release package (.tar.gz/.zip); the system applies it and restarts the service.</span></p>
+        <input type="file" id="updateFile" accept=".tar.gz,.tgz,.zip" hidden />
+        <div class="row" style="margin:0;align-items:center">
+          <button id="updateBtn" class="btn-warn" style="flex:0 0 auto"><svg class="icon"><use href="#i-upload"></use></svg> <span data-i18n="upd.upload">Upload update package …</span></button>
+          <span class="muted" id="updateMsg"></span>
+        </div>
+        <p class="help" id="upd_result"></p>
+        <details class="help" style="margin-top:.5rem">
+          <summary data-i18n="upd.diag">Diagnostics (queue &amp; agent log)</summary>
+          <pre id="upd_diag" style="white-space:pre-wrap;overflow:auto;max-height:16rem;font-family:monospace;font-size:.85em"></pre>
+        </details>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3 data-i18n="pw.title">Change password</h3></div>
+        <div class="row" style="align-items:flex-end">
+          <label title="Enter the currently valid web interface password to confirm." data-i18n-title="pw.currentTitle"><span data-i18n="pw.current">Current password</span> <input id="cur_pw" type="password" /></label>
+          <label title="New web interface password (at least 6 characters)." data-i18n-title="pw.newTitle"><span data-i18n="pw.new">New password</span> <input id="chg_pw" type="password" /></label>
+          <button id="changePwBtn" class="btn-ghost" style="flex:0 0 auto" data-i18n="pw.change">Change</button>
+        </div>
+        <span class="muted" id="pwMsg"></span>
+      </div>
+
+      <div class="card sticky">
+        <button id="saveBtn" class="btn-primary"
+          title="Saves all settings and applies them to the running engine immediately." data-i18n-title="save.title">
+          <svg class="icon"><use href="#i-save"></use></svg> <span data-i18n="save.btn">Save configuration</span></button>
+        <span class="muted" id="saveMsg"></span>
+      </div>
+    </section>
+  </main>
+
+  <footer>© 2026 Florian Finder · PVE-UPS</footer>
+
+  <script src="/i18n/en.js"></script>
+  <script src="/i18n/de.js"></script>
+  <script src="/i18n.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+# Normalise line endings. This project is deployed to Linux (LXC), so keep LF.
+* text=auto eol=lf
+
+# Binary-ish data files: leave untouched
+*.db binary
+
+# --- Deploy artifact (`git archive`, see scripts/make-dist.sh) ---------------
+# `git archive` only takes tracked files anyway (.git/.venv/__pycache__ etc. drop
+# out automatically). Additionally strip everything internal/dev-specific here, so
+# the tarball only contains the files needed to install/operate: install.sh,
+# pyproject.toml, app/**, deploy/**. Keep this list in sync with the installer.
+#
+# Docs in the release: ONLY the HTML user manuals (app/web/manual.html +
+# handbuch.html, behind the ?-icon in the web UI, standalone-capable). README and
+# CHANGELOG are developer/detail docs and are deliberately NOT shipped. The build
+# (scripts/make-dist.sh) only reads app/__init__.py — the README is NOT needed.
+README.md       export-ignore
+README.de.md    export-ignore
+Screenshots/    export-ignore
+CHANGELOG.md    export-ignore
+SECURITY.md     export-ignore
+.github/        export-ignore
+docs/           export-ignore
+tests/          export-ignore
+snmpdata/       export-ignore
+scripts/        export-ignore
+.gitattributes  export-ignore
+.gitignore      export-ignore
