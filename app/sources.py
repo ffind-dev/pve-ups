@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Optional
 
 from . import nut, ups
 from .config import NutConfig, SnmpConfig, UpsBase
@@ -36,6 +37,9 @@ def poll_budget_s(cfg: UpsBase) -> float:
     battery interval and still perfectly healthy. Cutting a poll off at the interval would
     turn working installations into permanently "unreachable" ones, which is an alarm and
     a fail-safe refusal to shut down.
+
+    A profile read one object per request (ups.MibProfile.single_varbind) fits the same
+    budget: it pays a round trip per object, and its first timeout ends the poll.
     """
     if isinstance(cfg, SnmpConfig):
         # Two profiles' worth of GETs under "auto", each timeout_s per try plus retries.
@@ -75,6 +79,13 @@ async def _poll(cfg: UpsBase) -> UpsState:
         return await ups.poll(cfg)
     # Unknown type: stay unreachable, which is an alarm and never a shutdown.
     return UpsState(error=f"Unsupported UPS source type: {getattr(cfg, 'type', '?')}")
+
+
+def poll_hint(cfg: UpsBase, state: UpsState, result: ProbeResult) -> Optional[str]:
+    """Advice for when the production poll and the per-object probe disagree, if any."""
+    if isinstance(cfg, SnmpConfig):
+        return ups.batching_hint(cfg, state, result)
+    return None
 
 
 async def probe(cfg: UpsBase) -> ProbeResult:

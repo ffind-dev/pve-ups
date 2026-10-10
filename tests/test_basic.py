@@ -35,7 +35,11 @@ def _isolated_engine_state(tmp_path, monkeypatch):
     """Point the engine's battery-timer state file at a per-test path, so tests never
     read/write a real (or another test's) engine-state.json."""
     from app import engine as engine_mod
+    from app import history as history_mod
     monkeypatch.setattr(engine_mod, "STATE_PATH", tmp_path / "engine-state.json")
+    # Same for the history (#37): a test that runs the loop must not create a real
+    # /var/lib/pve-usv/history.db.
+    monkeypatch.setattr(history_mod, "HISTORY_PATH", tmp_path / "history.db")
 
 
 # --- config round-trip ------------------------------------------------------
@@ -3067,7 +3071,8 @@ async def test_auto_switches_to_the_vendor_mib_when_its_anchor_answers(monkeypat
 
     state = await ups.poll(SnmpConfig(host="127.0.0.1", mib=SnmpMib.auto))
 
-    assert asked == [len(ups.RFC1628.objects) + 1, len(ups.APC.objects)]
+    # One anchor per vendor profile rides along with the standard GET.
+    assert asked == [len(ups.RFC1628.objects) + len(ups.PROFILES) - 1, len(ups.APC.objects)]
     assert state.mib == "apc"
     assert state.runtime_remaining_min == 19
     assert state.reachable is True
@@ -3090,7 +3095,7 @@ async def test_auto_stays_on_the_standard_when_no_vendor_anchor_answers(monkeypa
 
     state = await ups.poll(SnmpConfig(host="127.0.0.1", mib=SnmpMib.auto))
 
-    assert asked == [len(ups.RFC1628.objects) + 1]
+    assert asked == [len(ups.RFC1628.objects) + len(ups.PROFILES) - 1]
     assert state.mib == "rfc1628"
     assert state.power_source == "mains"
     assert state.runtime_remaining_min == 42
@@ -3149,6 +3154,312 @@ async def test_auto_does_not_spend_a_second_timeout_on_an_unreachable_ups(monkey
         assert len(asked) == 1, version
         assert state.reachable is False
         assert "timeout" in state.error
+
+
+# --- CyberPower: read one object per request (#40) ---------------------------
+def _snmp_agent(monkeypatch, answer):
+    """Replace pysnmp's GET with a function of the requested OIDs. Returns the OID list of
+    every request, so a test can tell one multi-object GET from several single ones."""
+    import pysnmp.hlapi.asyncio as hlapi
+
+    from app import ups
+
+    asked: list[list[str]] = []
+
+    async def fake_get(engine, auth, transport, context, *objects):
+        oids = list(objects)
+        asked.append(oids)
+        return answer(oids)
+
+    for name in ("getCmd", "get_cmd"):
+        if hasattr(hlapi, name):
+            monkeypatch.setattr(hlapi, name, fake_get)
+    # Pass the OID strings straight through, so the fake sees what was asked for without
+    # resolving pysnmp objects (which needs a MIB view this fake does not have).
+    monkeypatch.setattr(hlapi, "ObjectIdentity", lambda oid: oid)
+    monkeypatch.setattr(hlapi, "ObjectType", lambda ident: ident)
+    monkeypatch.setattr(ups, "_close_engine", lambda eng: None)
+    return asked
+
+
+def _cyberpower_card(on_battery=True, refuse=(), multi_times_out=True):
+    """A CyberPower card as reported in #40: CPS-MIB only, and silent (a timeout, not an
+    error) on any request that carries more than one object."""
+    from pysnmp.proto import rfc1905
+    from pysnmp.proto.rfc1902 import Integer, OctetString, TimeTicks
+
+    from app import ups
+
+    values = {
+        ups.OID_CPS_MODEL: OctetString("OR1500ELCDRM1U"),
+        ups.OID_CPS_OUTPUT_STATUS: Integer(3 if on_battery else 2),
+        ups.OID_CPS_BATTERY_STATUS: Integer(3 if on_battery else 2),
+        ups.OID_CPS_TIME_ON_BATTERY: TimeTicks(42000),
+        ups.OID_CPS_RUNTIME: TimeTicks(24000),
+        ups.OID_CPS_CAPACITY: Integer(18),
+        ups.OID_CPS_LOAD: Integer(31),
+    }
+
+    def answer(oids):
+        if len(oids) > 1 and multi_times_out:
+            return ("No SNMP response received before timeout", 0, 0, [])
+        oid = oids[0]
+        if oid in refuse or oid not in values:
+            return (None, rfc1905.errorStatus.clone(2), 1, [])  # v1 noSuchName
+        return (None, 0, 0, [(oid, values[oid])])
+
+    return answer
+
+
+@pytest.mark.asyncio
+async def test_cyberpower_is_read_one_object_per_request(monkeypatch):
+    from app import ups
+
+    asked = _snmp_agent(monkeypatch, _cyberpower_card())
+
+    state = await ups.poll(SnmpConfig(host="127.0.0.1", version=SnmpVersion.v1,
+                                      mib=SnmpMib.cyberpower))
+
+    assert [len(a) for a in asked] == [1] * len(ups.CYBERPOWER.objects)
+    assert state.reachable is True and state.mib == "cyberpower"
+    assert state.manufacturer == "CyberPower" and state.model == "OR1500ELCDRM1U"
+    assert state.power_source == "battery" and state.battery_status == "low"
+    # TimeTicks, hundredths of a second: 24000 -> 4 min, 42000 -> 420 s.
+    assert state.runtime_remaining_min == 4
+    assert state.seconds_on_battery == 420
+    assert state.battery_charge_pct == 18 and state.load_pct == 31
+
+
+@pytest.mark.asyncio
+async def test_cyberpower_single_reads_stop_at_the_first_timeout(monkeypatch):
+    """A dead card must cost one timeout, exactly like the multi-object GET it replaces —
+    not one per object, which would blow the poll budget."""
+    from app import ups
+
+    asked = _snmp_agent(
+        monkeypatch, lambda oids: ("No SNMP response received before timeout", 0, 0, []))
+
+    state = await ups.poll(SnmpConfig(host="127.0.0.1", mib=SnmpMib.cyberpower))
+
+    assert len(asked) == 1
+    assert state.reachable is False and state.answered is False
+    assert "timeout" in state.error
+
+
+@pytest.mark.asyncio
+async def test_cyberpower_object_refused_on_its_own_is_just_missing(monkeypatch):
+    """One GET per object also ends v1's all-or-nothing: a refused load reading leaves
+    every other value, and the UPS, intact."""
+    from app import ups
+
+    _snmp_agent(monkeypatch, _cyberpower_card(refuse=(ups.OID_CPS_LOAD,)))
+
+    state = await ups.poll(SnmpConfig(host="127.0.0.1", version=SnmpVersion.v1,
+                                      mib=SnmpMib.cyberpower))
+
+    assert state.reachable is True
+    assert state.load_pct is None
+    assert state.runtime_remaining_min == 4
+
+
+@pytest.mark.asyncio
+async def test_cyberpower_without_its_source_object_is_unreachable_not_mains(monkeypatch):
+    """The fail-safe rule holds on the new path: no output status, no verdict."""
+    from app import ups
+
+    _snmp_agent(monkeypatch, _cyberpower_card(refuse=(ups.OID_CPS_OUTPUT_STATUS,)))
+
+    state = await ups.poll(SnmpConfig(host="127.0.0.1", mib=SnmpMib.cyberpower))
+
+    assert state.reachable is False and state.answered is True
+    assert state.power_source == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_auto_detects_cyberpower_by_its_anchor_under_v2c(monkeypatch):
+    """A card that does answer multi-object requests is found by "auto" like APC, and
+    then read one object at a time all the same."""
+    from pysnmp.proto import rfc1905
+    from pysnmp.proto.rfc1902 import Integer
+
+    from app import ups
+
+    card = _cyberpower_card(on_battery=False, multi_times_out=False)
+
+    def answer(oids):
+        if len(oids) > 1:  # the standard GET with the vendor anchors appended
+            return (None, 0, 0, [
+                (o, Integer(2) if o == ups.OID_CPS_OUTPUT_STATUS else rfc1905.noSuchObject)
+                for o in oids])
+        return card(oids)
+
+    asked = _snmp_agent(monkeypatch, answer)
+
+    state = await ups.poll(SnmpConfig(host="127.0.0.1", mib=SnmpMib.auto))
+
+    assert ups.OID_CPS_OUTPUT_STATUS in asked[0]
+    assert [len(a) for a in asked[1:]] == [1] * len(ups.CYBERPOWER.objects)
+    assert state.mib == "cyberpower" and state.power_source == "mains"
+
+
+@pytest.mark.asyncio
+async def test_auto_falls_back_to_cyberpower_under_snmpv1(monkeypatch):
+    """v1 "auto": RFC 1628 and APC are refused as a whole, CyberPower is then read one
+    object per request rather than as the multi-object GET this card would not answer."""
+    from pysnmp.proto import rfc1905
+
+    from app import ups
+
+    card = _cyberpower_card()
+
+    def answer(oids):
+        if len(oids) > 1 and (set(oids) <= set(ups.RFC1628.oids) or set(oids) <= set(ups.APC.oids)):
+            return (None, rfc1905.errorStatus.clone(2), 1, [])
+        return card(oids)
+
+    asked = _snmp_agent(monkeypatch, answer)
+
+    state = await ups.poll(SnmpConfig(host="127.0.0.1", version=SnmpVersion.v1,
+                                      mib=SnmpMib.auto))
+
+    assert [len(a) for a in asked] == (
+        [len(ups.RFC1628.objects), len(ups.APC.objects)] + [1] * len(ups.CYBERPOWER.objects))
+    assert state.mib == "cyberpower" and state.power_source == "battery"
+
+
+def _nonconforming_v2c_card(speaks_rfc=True, speaks_cps=True):
+    """Modelled on a real CyberPower RMCARD (OR600ERM1U) over v2c: a missing object is
+    answered with v1's noSuchName for the WHOLE request, never with the v2c sentinel."""
+    from pysnmp.proto import rfc1905
+    from pysnmp.proto.rfc1902 import Integer
+
+    from app import ups
+
+    known = {}
+    if speaks_rfc:
+        known.update({o: Integer(3 if o == ups.OID_OUTPUT_SOURCE else 26)
+                      for o in ups.RFC1628.oids})
+    if speaks_cps:
+        known.update({o: Integer(2 if o == ups.OID_CPS_OUTPUT_STATUS else 37)
+                      for o in ups.CYBERPOWER.oids})
+
+    def answer(oids):
+        for i, oid in enumerate(oids, start=1):
+            if oid not in known:
+                return (None, rfc1905.errorStatus.clone(2), i, [])
+        return (None, 0, 0, [(o, known[o]) for o in oids])
+
+    return answer
+
+
+@pytest.mark.asyncio
+async def test_auto_survives_a_v2c_agent_that_refuses_a_missing_anchor(monkeypatch):
+    """Found on real hardware: the APC anchor appended to the standard GET made "auto"
+    fail on every poll of a CyberPower card that answers everything else."""
+    from app import ups
+
+    asked = _snmp_agent(monkeypatch, _nonconforming_v2c_card())
+
+    state = await ups.poll(SnmpConfig(host="127.0.0.1", mib=SnmpMib.auto))
+
+    assert state.reachable is True and state.mib == "cyberpower"
+    assert state.power_source == "mains"
+    # The refused union, then each vendor anchor on its own, then CyberPower per object.
+    vendors = len(ups.PROFILES) - 1
+    assert [len(a) for a in asked] == (
+        [len(ups.RFC1628.objects) + vendors] + [1] * vendors
+        + [1] * len(ups.CYBERPOWER.objects))
+
+
+@pytest.mark.asyncio
+async def test_auto_reads_the_standard_when_no_anchor_answers_on_its_own(monkeypatch):
+    from app import ups
+
+    asked = _snmp_agent(monkeypatch, _nonconforming_v2c_card(speaks_cps=False))
+
+    state = await ups.poll(SnmpConfig(host="127.0.0.1", mib=SnmpMib.auto))
+
+    assert state.reachable is True and state.mib == "rfc1628"
+    assert asked[-1] == ups.RFC1628.oids
+
+
+@pytest.mark.asyncio
+async def test_v1_fallback_keeps_the_original_refusal_when_no_vendor_answers(monkeypatch):
+    """A per-object profile is never refused as a whole; that must not make it "win"
+    with nothing in it, nor crash the error message."""
+    from pysnmp.proto import rfc1905
+
+    from app import ups
+
+    _snmp_agent(monkeypatch, lambda oids: (None, rfc1905.errorStatus.clone(2), 1, []))
+
+    state = await ups.poll(SnmpConfig(host="127.0.0.1", version=SnmpVersion.v1,
+                                      mib=SnmpMib.auto))
+
+    assert state.reachable is False and state.answered is True
+    assert "noSuchName" in state.error
+
+
+def test_cyberpower_output_status_mapping():
+    from app import ups
+
+    enum = ups._CPS_OUTPUT_STATUS
+    assert enum[2] == "mains" and enum[3] == "battery"
+    # Boost, ECO, buck and overload are all still on mains — none may start the timer.
+    assert {enum[4], enum[8], enum[10], enum[11]} == {"mains"}
+    assert enum[9] == "bypass" and enum[1] == "unknown"
+
+
+def _probe_result(mib, reachable=True):
+    from app.ups import ProbeResult
+
+    return ProbeResult(reachable=reachable, mib=mib, summary="probe says hi.")
+
+
+def test_batching_hint_tells_auto_users_to_pin_cyberpower():
+    """#40: poll silent, probe answering on CyberPower -> say what to do about it."""
+    from app import ups
+
+    silent = ups.UpsState(error="No SNMP response received before timeout")
+    hint = ups.batching_hint(SnmpConfig(host="h", mib=SnmpMib.auto), silent,
+                             _probe_result("cyberpower"))
+
+    assert hint and "'CyberPower'" in hint and "explicitly" in hint
+
+
+def test_batching_hint_stays_quiet_when_it_has_nothing_to_add():
+    from app import ups
+
+    silent = ups.UpsState(error="timeout")
+    answered = ups.UpsState(answered=True)
+    auto = SnmpConfig(host="h", mib=SnmpMib.auto)
+
+    # The poll answered: nothing to explain.
+    assert ups.batching_hint(auto, answered, _probe_result("cyberpower")) is None
+    # Nothing answered the probe either: plain unreachable, the summary says so already.
+    assert ups.batching_hint(auto, silent, _probe_result("rfc1628", reachable=False)) is None
+    # Already pinned to the single-object MIB: the timeout is something else.
+    assert ups.batching_hint(SnmpConfig(host="h", mib=SnmpMib.cyberpower), silent,
+                             _probe_result("cyberpower")) is None
+    # A multi-object MIB that answers singly: worth a report, not a setting to change.
+    other = ups.batching_hint(auto, silent, _probe_result("rfc1628"))
+    assert other and "report" in other
+
+
+@pytest.mark.asyncio
+async def test_ups_test_endpoint_appends_the_batching_hint(_import_target, monkeypatch):
+    main, _ = _import_target
+    from app import ups
+
+    _snmp_agent(monkeypatch, _cyberpower_card())
+
+    result = await main.api_test_ups({"type": "snmp", "host": "127.0.0.1",
+                                      "version": "v1", "mib": "auto"})
+
+    assert result["reachable"] is False
+    assert result["probe"]["mib"] == "cyberpower"
+    assert "explicitly" in result["probe"]["summary"]
+    assert ups.CYBERPOWER.label in result["probe"]["summary"]
 
 
 @pytest.mark.asyncio
@@ -8219,6 +8530,65 @@ async def test_cluster_probe_marks_a_missing_endpoint_as_absent(_import_target, 
     assert entries["/cluster/status"]["status"] == "ok"
 
 
+def _diag_trouble(cluster_result: dict) -> bool:
+    """The UI's rule for unfolding the diagnostics panel in orange (app.js testHost())."""
+    return bool(cluster_result["missing_privileges"]) or any(
+        e["status"] in ("denied", "error") for e in cluster_result["entries"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_cluster_probe_does_not_flag_an_unneeded_guest_list(_import_target, monkeypatch):
+    """#39: a token scoped to a plain cluster lacks VM.Audit on purpose. The guest list it
+    cannot read is then 'not needed', not an error that turns the panel orange."""
+    main, _ = _import_target
+    _fake_host_and_cluster(monkeypatch, has_ceph=False,
+                           permissions={"Sys.PowerMgmt": 1, "Sys.Audit": 1, "Sys.Console": 1})
+
+    result = await main.api_test_host(_host_payload(cluster=True))
+    entries = {e["name"]: e for e in result["cluster"]["entries"]}
+
+    assert entries["/cluster/resources?type=vm"]["status"] == "unneeded"
+    assert result["cluster"]["missing_privileges"] == []
+    assert not _diag_trouble(result["cluster"])
+
+
+@pytest.mark.asyncio
+async def test_cluster_probe_keeps_flagging_a_guest_list_the_options_need(
+        _import_target, monkeypatch):
+    """The same unreadable list IS a problem once an option stops the guests — and it is a
+    missing privilege ("denied"), not a generic error."""
+    main, _ = _import_target
+    _fake_host_and_cluster(monkeypatch,
+                           permissions={"Sys.PowerMgmt": 1, "Sys.Audit": 1, "Sys.Modify": 1,
+                                        "Sys.Console": 1})
+
+    result = await main.api_test_host(_host_payload(cluster=True, cluster_ceph=True))
+    entries = {e["name"]: e for e in result["cluster"]["entries"]}
+
+    assert entries["/cluster/resources?type=vm"]["status"] == "denied"
+    assert _diag_trouble(result["cluster"])
+
+
+def test_mark_unneeded_only_touches_failed_reads_of_unwanted_features():
+    from app import cluster
+
+    info = cluster.ClusterInfo()
+    for name, status, feature in (
+        ("ceph-denied", "denied", cluster.FEATURE_CEPH),
+        ("ceph-ok", "ok", cluster.FEATURE_CEPH),
+        ("guests-error", "error", cluster.FEATURE_GUESTS),
+        ("always", "denied", ""),
+    ):
+        info.probe.append(cluster.ClusterProbeEntry(name=name, status=status, feature=feature))
+
+    cluster.mark_unneeded(info, want_ceph=False, want_guests=True)
+    got = {e.name: e.status for e in info.probe}
+
+    assert got == {"ceph-denied": "unneeded", "ceph-ok": "ok",
+                   "guests-error": "error", "always": "denied"}
+
+
 def test_ceph_error_separates_no_ceph_from_unreadable():
     """"not configured" and "not permitted" must not look the same to the operator."""
     from app.cluster import ClusterInfo
@@ -8464,6 +8834,156 @@ async def test_a_cluster_without_ceph_never_touches_the_guests(monkeypatch):
     assert not _guest_calls(srv)
     assert ("POST", "/cluster/ha/status/disarm-ha") in srv.calls
     assert not any(srv.flags.values())
+
+
+# --- the guest stop on its own switch, without Ceph (#43) ---------------------
+def _guest_stop_only(eng, *, ceph=False):
+    for h in eng.cfg.hosts:
+        h.cluster_ceph = ceph
+        h.cluster_guest_stop = True
+
+
+@pytest.mark.asyncio
+async def test_the_guest_stop_runs_without_ceph_when_switched_on(monkeypatch):
+    """#43: a plain cluster (NFS, no Ceph) can ask for the parallel cluster-wide guest
+    stop on its own. The guests go, the appliance stays, and no Ceph flag is touched."""
+    srv = _CephServer(has_ceph=False)
+    eng = _outage_cluster_engine(monkeypatch, srv)
+    _guest_stop_only(eng)
+    eng._fire_host = _noop_fire(eng)  # type: ignore[assignment]
+
+    await eng._evaluate()
+
+    assert len(_guest_calls(srv)) == 2
+    assert srv.guests[950]["status"] == "running"
+    assert ("POST", "/cluster/ha/status/disarm-ha") in srv.calls
+    assert not any(srv.flags.values())
+
+
+@pytest.mark.asyncio
+async def test_the_guest_stop_tick_does_not_set_ceph_flags_on_a_ceph_cluster(monkeypatch):
+    """The two switches stay apart in the direction that matters: the guest stop alone
+    never writes into the storage layer, even where there is Ceph."""
+    srv = _CephServer(has_ceph=True)
+    eng = _outage_cluster_engine(monkeypatch, srv)
+    _guest_stop_only(eng)
+    eng._fire_host = _noop_fire(eng)  # type: ignore[assignment]
+
+    await eng._evaluate()
+
+    assert len(_guest_calls(srv)) == 2
+    assert not any(srv.flags.values())
+
+
+@pytest.mark.asyncio
+async def test_a_ceph_tick_without_ceph_still_honours_the_guest_stop_tick(monkeypatch):
+    """Ceph ticked on a cluster that has none: the Ceph part is skipped as before, but an
+    explicit guest-stop tick is a request of its own and still runs."""
+    srv = _CephServer(has_ceph=False)
+    eng = _outage_cluster_engine(monkeypatch, srv)
+    _guest_stop_only(eng, ceph=True)
+    eng._fire_host = _noop_fire(eng)  # type: ignore[assignment]
+
+    await eng._evaluate()
+
+    assert len(_guest_calls(srv)) == 2
+    assert not any(srv.flags.values())
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_guest_stop_without_ceph_is_a_warning_not_critical(monkeypatch):
+    """Without Ceph a skipped guest stop costs speed, not the storage: the nodes still
+    stop their own guests as they power off."""
+    srv = _CephServer(has_ceph=False, has_disarm=False, ha_services=2)
+    eng = _outage_cluster_engine(monkeypatch, srv)
+    _guest_stop_only(eng)
+    events = _notify_recorder(eng)
+    eng._fire_host = _noop_fire(eng)  # type: ignore[assignment]
+
+    await eng._evaluate()
+
+    assert not _guest_calls(srv)
+    skipped = [(sev, body) for s, sev, body in events if s.endswith("guest shutdown skipped")]
+    assert skipped and skipped[0][0] == "warning"
+    assert "its own guests" in skipped[0][1]
+
+
+@pytest.mark.asyncio
+async def test_the_preview_applies_the_same_guest_stop_rules_as_the_preparation(monkeypatch):
+    """The preview used to promise a guest stop the preparation then skipped for want of
+    an HA disarm. Both now read _guest_plan()."""
+    from app import cluster
+
+    srv = _CephServer(has_ceph=False, has_disarm=False, ha_services=2)
+    eng = _outage_cluster_engine(monkeypatch, srv)
+    _guest_stop_only(eng)
+    eng.cluster_states["prod"] = await cluster.inspect(
+        eng.cfg.hosts[0], self_vmid=950, self_node="pve01")
+
+    preview = eng._cluster_preview()
+
+    assert "guest stop skipped (needs HA disarm" in preview
+    assert "Ceph flags" not in preview
+
+    srv_ok = _CephServer(has_ceph=False)
+    eng2 = _outage_cluster_engine(monkeypatch, srv_ok)
+    _guest_stop_only(eng2)
+    eng2.cluster_states["prod"] = await cluster.inspect(
+        eng2.cfg.hosts[0], self_vmid=950, self_node="pve01")
+    assert "stop 2 of 3 running guests" in eng2._cluster_preview()
+
+
+def test_the_shutdown_budget_counts_the_guest_stop_without_ceph():
+    from app.engine import shutdown_budget
+
+    th = Thresholds(cluster_prep_timeout_s=60, cluster_guest_shutdown_timeout_s=300)
+
+    def budget(**switches):
+        return shutdown_budget(AppConfig(thresholds=th, hosts=[
+            PveHostConfig(name="a", api_url="x", cluster=True, **switches)])).cluster_s
+
+    assert budget() == 60
+    assert budget(cluster_guest_stop=True) == 360
+    assert budget(cluster_ceph=True) == 360
+
+
+def test_the_guest_stop_switch_defaults_off_and_round_trips():
+    host = PveHostConfig(name="a", api_url="x")
+    assert host.cluster_guest_stop is False
+    again = PveHostConfig.model_validate(
+        PveHostConfig(name="a", api_url="x", cluster_guest_stop=True).model_dump())
+    assert again.cluster_guest_stop is True
+
+
+@pytest.mark.asyncio
+async def test_host_test_asks_for_the_guest_privileges_with_the_guest_stop_alone(
+        _import_target, monkeypatch):
+    main, _ = _import_target
+    _fake_host_and_cluster(monkeypatch, has_ceph=False,
+                           permissions={"Sys.PowerMgmt": 1, "Sys.Audit": 1, "Sys.Console": 1})
+
+    result = await main.api_test_host(
+        _host_payload(cluster=True, cluster_guest_stop=True))
+    entries = {e["name"]: e for e in result["cluster"]["entries"]}
+
+    assert result["cluster"]["missing_privileges"] == [
+        "VM.Audit (list the cluster's guests)",
+        "VM.PowerMgmt (stop the guests before the shutdown)"]
+    # Needed now, so the unreadable list stays a finding (#39 only hides unneeded ones).
+    assert entries["/cluster/resources?type=vm"]["status"] == "denied"
+    assert "guest list cannot be read" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_host_test_says_when_ha_blocks_the_guest_stop(_import_target, monkeypatch):
+    main, _ = _import_target
+    _fake_host_and_cluster(monkeypatch, has_ceph=False, has_disarm=False, ha_services=2)
+
+    result = await main.api_test_host(
+        _host_payload(cluster=True, cluster_guest_stop=True))
+
+    assert "NOT stopped cluster-wide" in result["message"]
+    assert "9.2" in result["message"]
 
 
 @pytest.mark.asyncio
@@ -9111,12 +9631,16 @@ def test_cluster_switches_are_read_per_cluster_not_per_triggering_node(monkeypat
     """
     eng = _split_feed_engine(monkeypatch, _srv4(), ceph=False)
     members = list(eng.cfg.hosts)
-    assert eng._cluster_switches(members) == (False, True, True)
+    # (ceph, disarm, unit, guest_stop)
+    assert eng._cluster_switches(members) == (False, True, True, False)
 
     # A single node asking for Ceph is enough: skipping a step that was asked for costs
     # the storage, running one nobody asked for costs a maintenance flag.
     members[3].cluster_ceph = True
-    assert eng._cluster_switches(members)[0] is True
+    sw = eng._cluster_switches(members)
+    assert sw.ceph is True
+    # ... and Ceph always brings the guest stop along, whatever its own tick says.
+    assert sw.guest_stop is False and sw.guests is True
 
 
 @pytest.mark.asyncio

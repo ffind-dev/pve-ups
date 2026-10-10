@@ -180,7 +180,9 @@ def test_snmp_mib_keys_exist_in_both_dictionaries():
     assert not missing, f"MIBs without a dictionary entry: {missing}"
 
     # The wizard dropdown is built in JS; a MIB missing there is unreachable in the UI.
-    block = re.search(r"const SNMP_MIBS = \[(.*?)\];", (WEB / "app.js").read_text(encoding="utf-8"))
+    # re.S: the list is long enough to wrap in app.js.
+    block = re.search(r"const SNMP_MIBS = \[(.*?)\];",
+                      (WEB / "app.js").read_text(encoding="utf-8"), re.S)
     assert block, "SNMP_MIBS not found in app.js"
     # Digits allowed, unlike SOURCE_TYPES above: "rfc1628" carries its RFC number.
     assert re.findall(r'\["([a-z0-9_]+)"', block.group(1)) == kinds

@@ -32,6 +32,7 @@
     <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
     <symbol id="i-battery" viewBox="0 0 24 24"><rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><line x1="6" y1="11" x2="6" y2="13"/><line x1="10" y1="11" x2="10" y2="13"/><line x1="14" y1="11" x2="14" y2="13"/></symbol>
     <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><polyline points="3 3 3 21 21 21"/><polyline points="6 15 10 10 14 13 20 6"/></symbol>
     <symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/></symbol>
   </svg>
 
@@ -43,6 +44,8 @@
 
     <nav class="nav-seg" id="mainNav" hidden>
       <button data-view="dashboard" class="tab active"><svg class="icon"><use href="#i-dashboard"></use></svg> <span data-i18n="nav.dashboard">Dashboard</span></button>
+      <!-- Only shown while the history is switched on (Settings -> System). -->
+      <button data-view="history" class="tab" id="historyTab" hidden><svg class="icon"><use href="#i-chart"></use></svg> <span data-i18n="nav.history">History</span></button>
       <button data-view="settings" class="tab"><svg class="icon"><use href="#i-settings"></use></svg> <span data-i18n="nav.settings">Settings</span></button>
     </nav>
 
@@ -185,6 +188,60 @@
       </div>
     </section>
 
+    <!-- HISTORY (#37): drawn by history.js. Filters in one row above the chart; the
+         chart itself, its legend and the outage table below all follow them. -->
+    <section id="history" hidden>
+      <div class="card">
+        <div class="card-h"><h3><svg class="icon"><use href="#i-chart"></use></svg> <span data-i18n="hist.title">History</span></h3>
+          <a class="doclink" href="/manual.html#history" data-manual="history" target="_blank" rel="noopener" title="Read in the manual: History" data-i18n-title="hist.doc"><svg class="icon"><use href="#i-help"></use></svg></a></div>
+        <div class="hist-bar">
+          <div class="hseg" id="h_range" role="group" aria-label="Time range"></div>
+          <div class="hseg" id="h_ups" role="group" aria-label="UPS"></div>
+          <span class="spacer"></span>
+          <button class="btn-ghost btn-sm" id="h_zoomreset" hidden data-i18n="hist.zoomReset">Reset period</button>
+          <button class="btn-ghost btn-sm" id="h_csv"><svg class="icon"><use href="#i-download"></use></svg> <span data-i18n="hist.csv">CSV</span></button>
+        </div>
+        <div class="hist-bar">
+          <!-- Free period: always shows the period on screen, whether it came from a
+               preset, a zoom or this input. Native pickers: offline and localised by the
+               browser. -->
+          <div class="hist-span" title="Pick the start and end of the period to show." data-i18n-title="hist.spanTitle">
+            <label><span data-i18n="hist.from">From</span> <input type="datetime-local" id="h_from" step="60" /></label>
+            <label><span data-i18n="hist.to">To</span> <input type="datetime-local" id="h_to" step="60" /></label>
+            <button type="button" class="btn-ghost btn-sm" id="h_apply" data-i18n="hist.apply">Show</button>
+          </div>
+          <div class="hist-toggles" id="h_series"></div>
+          <span class="spacer"></span>
+          <label class="hist-toggles" title="Also mark informational events such as self-tests." data-i18n-title="hist.infoTitle"><span><input type="checkbox" id="h_info" /> <span data-i18n="hist.info">Info events</span></span></label>
+        </div>
+        <div class="hist-chart" id="h_chartwrap">
+          <svg id="h_svg" class="hist" width="100%" role="img" aria-label="History chart"></svg>
+          <div class="hist-tip" id="h_tip" hidden></div>
+        </div>
+        <div class="hist-legend" id="h_legend"></div>
+        <p class="help" id="h_note"></p>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3 data-i18n="hist.outages">Outages in this period</h3></div>
+        <div class="table-wrap scroll">
+          <table class="mini" id="h_outages">
+            <thead><tr>
+              <th data-i18n="hist.colStart">Start</th>
+              <th data-i18n="hist.colUps">UPS</th>
+              <th data-i18n="hist.colDuration">Duration</th>
+              <th data-i18n="hist.colRuntime">Lowest runtime</th>
+              <th data-i18n="hist.colCharge">Lowest charge</th>
+              <th data-i18n="hist.colLoad">Highest load</th>
+              <th data-i18n="hist.colShutdown">Shutdown</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="empty" id="h_noout" hidden data-i18n="hist.noOutages">No outage in this period.</p>
+        <p class="help" data-i18n="hist.outagesHelp">A row is one stretch on battery. Click it to zoom the chart to that outage.</p>
+      </div>
+    </section>
+
     <!-- SETTINGS / WIZARD -->
     <section id="settings" hidden>
       <div class="card">
@@ -264,8 +321,9 @@
           <label class="switch" title="Abort the shutdown when the cluster preparation fails." data-i18n-title="th.clusterAbortTitle">
             <input type="checkbox" id="th_cluster_abort_on_prep_failure" />
             <span data-i18n="th.clusterAbort">Abort the shutdown if the cluster preparation fails</span></label>
-          <!-- Which guest the appliance itself runs in. Only shown with the Ceph option
-               on, because that is the only path that stops guests cluster-wide. Picked
+          <!-- Which guest the appliance itself runs in. Only shown with the guest stop on
+               (by itself or through the Ceph option), because that is the only path that
+               stops guests cluster-wide. Picked
                from a list and never typed: a wrong vmid means this appliance stops
                ITSELF in the middle of an outage. -->
           <div id="applianceBox" hidden>
@@ -346,6 +404,19 @@
           title="Off: the event log only mentions the self-test when it fails. The check itself keeps running at the interval above." data-i18n-title="sys.selftestLogOkTitle">
           <input type="checkbox" id="selftest_log_ok" />
           <span data-i18n="sys.selftestLogOk">Log successful self-tests to the event log</span></label>
+        <hr/>
+        <span class="cfg-label" data-i18n="sys.historyGroup">History</span>
+        <label class="switch"
+          title="Records runtime, load, charge and power source of every UPS for the History tab." data-i18n-title="sys.historyTitle">
+          <input type="checkbox" id="hist_enabled" />
+          <span data-i18n="sys.history">Record the UPS history</span></label>
+        <div class="row" style="align-items:flex-end">
+          <label title="How long the history is kept, in days (1–365)." data-i18n-title="sys.historyDaysTitle"><span data-i18n="sys.historyDays">Keep the history for (days)</span> <input id="hist_retention_days" type="number" min="1" max="365" /></label>
+          <div style="flex:1 1 160px;min-width:150px">
+            <button type="button" class="btn-ghost btn-sm" id="hist_clear"><svg class="icon"><use href="#i-trash"></use></svg> <span data-i18n="sys.historyClear">Clear history</span></button>
+          </div>
+        </div>
+        <p class="help"><span id="hist_size"></span> <span data-i18n="sys.historyHelp">About 1,440 values per UPS and day — a few MB per UPS over 90 days. Not part of the configuration backup. Switching it off stops both the recording and the History tab; what was recorded stays until it ages out or is cleared.</span></p>
       </div>
 
       <div class="card">
@@ -411,5 +482,6 @@
   <script src="/i18n/de.js"></script>
   <script src="/i18n.js"></script>
   <script src="/app.js"></script>
+  <script src="/history.js"></script>
 </body>
 </html>

@@ -10,12 +10,118 @@ reads it dynamically. On every release: bump `__version__` **and** add a section
 
 ## [Unreleased]
 
+## [4.3.0] - 2026-10-10
+
+A feature release from GitHub issue reports: a history of every UPS, the cluster-wide guest
+stop for clusters without Ceph, CyberPower network cards, and an installer that explains
+itself.
+
+Three settings are added: `history.enabled`, `history.retention_days` and, per Proxmox VE
+host, `cluster_guest_stop` (off). The history is **on for a new installation and off after
+an update** — switch it on under Settings → System. No existing config needs editing.
+
+### Highlights
+- **History tab** ([#37]): remaining runtime, load and charge of every UPS over time, with
+  outages, triggers and event-log markers, zoom, a free period, an outage table and CSV
+  export. Off after an update until you switch it on.
+- **"Stop all guests cluster-wide first" without Ceph** ([#43]): every guest is asked to
+  shut down at once before the first node goes down, instead of node by node in startup
+  order — for clusters where that takes longer than the battery lasts.
+- **CyberPower network cards** ([#40]) are read through their own MIB, also cards without
+  RFC 1628. "Automatic" over SNMP v2c no longer fails on cards that answer a missing object
+  with an error.
+- **The Docker image runs on a Raspberry Pi** (64-bit and 32-bit).
+
 ### Added
 - **The Docker image runs on a Raspberry Pi.** It is now published for `linux/arm64`
   (Raspberry Pi 3/4/5 on a 64-bit OS) and `linux/arm/v7` (32-bit OS) alongside
   `linux/amd64`, so the UPS management can run on a small, low-powered device instead of
   one of the machines it shuts down. Dependencies without prebuilt ARM wheels are compiled
   in a separate build stage, so the runtime image carries no compiler.
+- **History tab** ([#37]): remaining runtime, load and charge of every UPS over time,
+  between Dashboard and Settings. Periods from 1 hour to 90 days plus "all", or any start
+  and end picked in the From/To fields (which always show the period on screen); one UPS shows
+  runtime (minutes) and load/charge (percent) as two panels on a shared time axis, "all"
+  compares one measure across every UPS with a status strip each. The power state is drawn
+  as background bands (on battery, shutdown triggered, unreachable, bypass), warnings and
+  critical events from the event log as markers (informational ones on request), the
+  runtime trigger as a dashed line. Drag to zoom, double-click to zoom out, an outage table
+  (start, duration, lowest runtime and charge, highest load, triggered) whose rows zoom to
+  the outage, and CSV export of the raw values. New endpoints `GET /api/history`,
+  `GET /api/history.csv`, `GET /api/history/info` and `DELETE /api/history`, all behind the
+  login.
+- **Recording the history** (`history.enabled`, `history.retention_days`, Settings →
+  System): one sample per UPS a minute on mains, one per poll on battery and one at every
+  change of state, kept in its own `history.db` next to the event log for 1–365 days
+  (default 90; about a few MB per UPS and quarter). Written from a background thread after
+  every decision of the poll has been made, with a bounded queue: a slow, full or hanging
+  disk costs the history, never the shutdown. **On for a new installation; an existing
+  configuration gets it off on update** (and a backup from an earlier version on import),
+  so an update never starts writing to a disk nobody sized for it. Switching it off stops
+  the recording and hides the tab; what was recorded stays until it ages out or is
+  cleared. Not part of the configuration backup, and "Clear log" leaves it alone.
+- **"Stop all guests cluster-wide first" without Ceph** ([#43]). The parallel guest stop
+  the Ceph procedure has always used is now a switch of its own (`cluster_guest_stop`, off
+  by default): before the first node goes down, every VM and container in the cluster
+  except this appliance is asked to shut down at once, instead of each node working
+  through its guests in reverse startup order as it powers off — which with many order
+  groups can take longer than the battery lasts. The startup order is deliberately
+  ignored, guests that do not stop in time are forced off after the configured time, and
+  the same preconditions apply as with Ceph: the appliance's own guest has to be picked,
+  `VM.Audit` and `VM.PowerMgmt` are needed, and where HA manages guests HA has to be
+  disarmed first. The Ceph option includes the guest stop as before — the host card shows
+  it ticked and locked — and the guest stop alone never touches Ceph. The budget hint, the
+  shutdown preview, the self-test and the host test all follow the new switch.
+- **CyberPower MIB** ([#40]): SNMP UPS devices can be read through the CPS-MIB
+  (enterprise 3808) of CyberPower network cards, which covers cards that implement no
+  RFC 1628 at all. "Automatic" finds it like APC PowerNet, and it can be selected by hand.
+  It is always read **one value per request**: some of these cards time out on a request
+  for several values while answering every value on its own. On a local network that costs
+  a few hundred milliseconds per poll, and a card that stops answering still costs only one
+  timeout — the first one ends the poll.
+- "Test UPS" recognises a card that times out on a request for several values but answers
+  them one at a time, and says to select the CyberPower MIB explicitly ([#40]). "Automatic"
+  always starts with such a request, so it cannot find these cards on its own — and
+  retrying every timeout to find out would double what a UPS that is really gone costs.
+- **`install.sh --template-storage <name>`** ([#44]) picks the storage the Debian
+  template is downloaded to; until now it was fixed to `local` with a silent fallback. A
+  storage named this way is checked and refused if it cannot hold templates, the same as
+  `--storage`; only the default still falls back on its own.
+- **`install.sh --help`** lists every option with its default, and both READMEs and
+  manuals now carry the full option table instead of a single example ([#44]).
+
+### Fixed
+- **"Automatic" MIB over SNMP v2c/v3 no longer fails on agents that refuse a missing
+  object** instead of marking it. "Automatic" appends each vendor MIB's anchor object to the
+  standard request; a conforming agent reports an object it lacks as missing, but a real
+  CyberPower card refuses the whole request with SNMPv1's `noSuchName` — so the UPS showed
+  as unreachable on every poll although it answers everything it has. A refusal caused by
+  an anchor now leads to asking each anchor on its own (one round trip each, never a second
+  timeout) and reading the MIB that answered. A non-conforming v2c agent that refuses one
+  of the standard's own objects now falls back to the vendor MIBs, as SNMPv1 already did.
+- **The cluster diagnostics no longer flag privileges nothing needs** ([#39]). A token
+  scoped exactly to a plain cluster — `Sys.Audit`, without `VM.Audit` — passed the host
+  test, yet the per-query panel filed the unreadable guest list as an error and unfolded in
+  orange. Each query now knows which option it serves; a read that fails for an option that
+  is not ticked shows as "not readable (not needed)" and leaves the panel closed. The guest
+  list a token may not read is also reported as a missing privilege rather than a generic
+  error when it *is* needed.
+
+### Changed
+- The shutdown preview now applies the same rules to the guest stop as the preparation
+  itself: it no longer promises a guest stop that the preparation would skip because HA
+  manages guests and cannot be disarmed.
+- A guest stop that was asked for but cannot run is reported even when nothing else is
+  left to prepare — as a WARNING without Ceph, where the nodes still stop their own guests,
+  and as a CRITICAL with Ceph, as before.
+- `install.sh` names the option when one that needs a value is given without it, instead
+  of failing with an unbound-variable error.
+
+[#37]: https://github.com/ffind-dev/pve-ups/issues/37
+[#39]: https://github.com/ffind-dev/pve-ups/issues/39
+[#40]: https://github.com/ffind-dev/pve-ups/issues/40
+[#43]: https://github.com/ffind-dev/pve-ups/issues/43
+[#44]: https://github.com/ffind-dev/pve-ups/issues/44
 
 ## [4.2.0] - 2026-09-17
 
@@ -1209,7 +1315,8 @@ keep working).
   needs; a legacy `notifications.smtp` config key is ignored on load and dropped on the
   next save.
 
-[Unreleased]: https://github.com/ffind-dev/pve-ups/compare/v4.2.0...HEAD
+[Unreleased]: https://github.com/ffind-dev/pve-ups/compare/v4.3.0...HEAD
+[4.3.0]: https://github.com/ffind-dev/pve-ups/compare/v4.2.0...v4.3.0
 [4.2.0]: https://github.com/ffind-dev/pve-ups/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/ffind-dev/pve-ups/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/ffind-dev/pve-ups/compare/v3.5.0...v4.0.0

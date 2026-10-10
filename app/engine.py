@@ -26,11 +26,11 @@ import os
 import socket
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from itertools import groupby
 
-from . import __version__, cluster, db, notify, targets
+from . import __version__, cluster, db, history, notify, targets
 from .config import AppConfig, HostConfig, PveHostConfig, Thresholds, UpsBase
 from .sources import poll
 from .ups import UpsState
@@ -128,6 +128,41 @@ class ShutdownBudget:
         return " + ".join(parts)
 
 
+class ClusterSwitches(NamedTuple):
+    """The cluster switches as ONE answer per cluster (see Engine._cluster_switches)."""
+
+    ceph: bool        # Ceph maintenance flags — and with them, always, the guest stop
+    disarm: bool      # disarm the HA manager
+    unit: bool        # shut the whole cluster down as a unit
+    guest_stop: bool  # the cluster-wide guest stop on its own, for a cluster without Ceph
+
+    @property
+    def guests(self) -> bool:
+        """Whether anything asks for the guest stop: the Ceph switch includes it."""
+        return self.ceph or self.guest_stop
+
+
+@dataclass
+class GuestPlan:
+    """Whether the cluster-wide guest stop runs on one cluster, and if not, why not.
+
+    Decided in one place (Engine._guest_plan) for the preparation, its dry-run, the
+    preview and the self-test: when each of them derived it on its own, the preview
+    promised a guest stop the preparation then skipped for want of an HA disarm.
+    """
+
+    asked: bool = False       # a switch asks for it (Ceph, or the guest-stop tick)
+    requested: bool = False   # ... and this cluster can take it (Ceph present if only Ceph asked)
+    block: str = ""           # why a stop that was asked for will not run; "" = it runs
+    self_guest: Optional["cluster.GuestInfo"] = None
+    source: str = ""          # how self_guest was (not) found, see cluster.find_self_guest
+    needs_disarm: bool = False  # HA manages guests here, so HA has to be disarmed first
+
+    @property
+    def want(self) -> bool:
+        return self.requested and not self.block
+
+
 # How many events can be emitted one after another between a trigger firing and the last
 # shutdown stage, NOT counting the stages themselves: the outage notice, the four
 # cluster-preparation events, and the abort or partial-shutdown notice. Engine._emit()
@@ -141,6 +176,12 @@ class ShutdownBudget:
 # themselves are sequential. shutdown_budget() therefore adds the stage count — a
 # constant alone could not, and understated a four-stage estate by three rounds.
 NOTIFY_EVENTS_ON_PATH = 6
+
+# History sampling (#37): one row per UPS a minute on mains, one per poll while on battery,
+# and one at every change of state in between. The buffer cap bounds what piles up in
+# memory while the writer thread is stuck on a disk that does not answer.
+HISTORY_INTERVAL_S = 60
+HISTORY_BUFFER_MAX = 20000
 
 
 def shutdown_budget(cfg: AppConfig) -> ShutdownBudget:
@@ -165,9 +206,10 @@ def shutdown_budget(cfg: AppConfig) -> ShutdownBudget:
     instead of an unbounded one.
 
     The cluster term follows the switches, not just the tick: the guest stop is the
-    largest single number here and it runs only where Ceph was asked for, so it is counted
-    only there. Reading it off ``cluster`` alone charged a plain cluster five minutes for a
-    step that cannot happen — and the battery-reserve warning below quotes this figure.
+    largest single number here and it runs only where Ceph or the guest stop was asked
+    for, so it is counted only there. Reading it off ``cluster`` alone charged a plain
+    cluster five minutes for a step that cannot happen — and the battery-reserve warning
+    below quotes this figure.
 
     Two things it deliberately does not add. The number of clusters, because a pure
     function over the config cannot know how many distinct clusters those hosts belong to
@@ -185,14 +227,18 @@ def shutdown_budget(cfg: AppConfig) -> ShutdownBudget:
         stages += 1
     clustered = any(h.enabled and getattr(h, "cluster", False) for h in cfg.hosts)
     # The guest stop is the elastic half of the preparation and by far the largest term,
-    # and it only ever runs with Ceph (see _prepare_clusters: want_guests requires
-    # want_ceph). Counting it for a cluster whose members never ticked the Ceph switch
-    # added five minutes to a step that provably cannot happen — enough on a plain
-    # three-node cluster to push the total past the default 10-minute trigger and warn a
-    # perfectly sized installation that its battery reserve is too short. Still "err on
-    # the high side": _cluster_switches() resolves the switch as "any member asked for
-    # it", and any(cfg.hosts) is the superset of that.
-    ceph = any(h.enabled and getattr(h, "cluster_ceph", False) for h in cfg.hosts)
+    # and it only ever runs where Ceph or the guest stop itself is switched on (see
+    # Engine._guest_plan). Counting it for a cluster whose members ticked neither added
+    # five minutes to a step that provably cannot happen — enough on a plain three-node
+    # cluster to push the total past the default 10-minute trigger and warn a perfectly
+    # sized installation that its battery reserve is too short. Still "err on the high
+    # side": _cluster_switches() resolves a switch as "any member asked for it", and
+    # any(cfg.hosts) is the superset of that.
+    guests = any(
+        h.enabled
+        and (getattr(h, "cluster_ceph", False) or getattr(h, "cluster_guest_stop", False))
+        for h in cfg.hosts
+    )
     noisy = any(h.enabled and h.url for h in cfg.notifications.webhooks)
     return ShutdownBudget(
         stages=stages,
@@ -203,7 +249,7 @@ def shutdown_budget(cfg: AppConfig) -> ShutdownBudget:
         host_s=int(th.host_shutdown_timeout_s + targets.DEADLINE_GRACE_S) * stages,
         cluster_s=(
             int(th.cluster_prep_timeout_s)
-            + (int(th.cluster_guest_shutdown_timeout_s) if ceph else 0)
+            + (int(th.cluster_guest_shutdown_timeout_s) if guests else 0)
             if clustered
             else 0
         ),
@@ -396,6 +442,14 @@ class Engine:
 
         # Daily housekeeping: keep the event log bounded.
         self.last_prune_date = None  # type: ignore[var-annotated]
+
+        # History (#37): rows waiting for the writer thread, the writer itself, and per
+        # UPS when and in which state the last row was taken.
+        self._history_buf: list[tuple] = []
+        self._history_task: Optional[asyncio.Task] = None
+        self._history_last: dict[str, tuple[float, tuple]] = {}
+        self._history_prune_due = False
+        self._history_failing = False
 
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
@@ -734,6 +788,12 @@ class Engine:
                 self._maybe_prune()
             except Exception as exc:  # noqa: BLE001
                 log.exception("Engine iteration failed: %s", exc)
+            # Last, and outside the block above: every decision of this iteration is made
+            # by now, and nothing the history does — or fails to do — can reach it.
+            try:
+                self._maybe_record_history()
+            except Exception as exc:  # noqa: BLE001 - the history never touches the loop
+                log.warning("History sampling failed: %s", exc)
 
             # Keep the fast battery cadence while we believe ANY UPS is on battery — even if
             # one just went blind (unreachable) mid-outage — so the countdown stays responsive.
@@ -1572,34 +1632,32 @@ class Engine:
         if not self.cluster_states:
             return "No cluster has been inspected yet - run the self-test first."
 
-        ap = self.cfg.appliance
         own_hostname = _hostname()
         lines = []
         for name, info in self.cluster_states.items():
             members = self._cluster_members(info, name)
-            ask_ceph, ask_disarm, _ask_all = self._cluster_switches(members)
-            want_ceph = ask_ceph and not info.ceph_unavailable
-            want_disarm = ask_disarm and not info.disarm_unavailable
+            sw = self._cluster_switches(members)
+            want_ceph = sw.ceph and not info.ceph_unavailable
+            want_disarm = sw.disarm and not info.disarm_unavailable
             steps = []
             if want_disarm:
                 steps.append("HA disarm")
-            self_guest, _source = cluster.find_self_guest(
-                info.guests, ap.self_vmid, ap.self_node, own_hostname
-            )
-            if want_ceph and not info.guests_unreadable and (
-                self_guest is not None or ap.self_external
-            ):
+            # The same decision the preparation makes, HA precondition included.
+            plan = self._guest_plan(info, sw)
+            if plan.want:
                 # Not named ``targets``: that is the module this engine shuts down
                 # through, and a local of the same name shadows it for the whole function.
-                stop_list = cluster.stop_targets(info.guests, self_guest, own_hostname)
+                stop_list = cluster.stop_targets(info.guests, plan.self_guest, own_hostname)
                 steps.append(
                     f"stop {len(stop_list)} of {len(info.running_guests)} running guests"
-                    + (f" (sparing {self_guest.label})" if self_guest else "")
+                    + (f" (sparing {plan.self_guest.label})" if plan.self_guest else "")
                 )
+            elif plan.requested:
+                steps.append(f"guest stop skipped ({plan.block})")
             if want_ceph:
                 steps.append(f"Ceph flags {','.join(cluster.CEPH_MAINTENANCE_FLAGS)}")
             if not steps:
-                steps.append("nothing (no Ceph, no HA disarm)")
+                steps.append("nothing (no Ceph, no HA disarm, no guest stop)")
             order = ", ".join(
                 h.name + ("*" if h.name in info.mon_nodes else "")
                 for h in self.cfg.ordered_hosts()
@@ -1622,10 +1680,91 @@ class Engine:
         if self.last_prune_date == today:
             return
         self.last_prune_date = today
+        # The history's own prune rides along with the next write (see _history_kick).
+        self._history_prune_due = True
         try:
             db.prune()
         except Exception as exc:  # noqa: BLE001 - housekeeping must never affect the loop
             log.warning("Event log prune failed: %s", exc)
+
+    # -- history (#37) ---------------------------------------------------------
+    def _maybe_record_history(self) -> None:
+        """Queue this iteration's history rows and hand them to the writer thread.
+
+        Never blocks and never waits: the rows go to a background thread through
+        _history_kick(), so a slow or hanging disk (an SD card, a full volume) costs the
+        history, not the poll loop. A row is taken when a UPS's state changes, on every
+        poll while it is on battery (an outage is what the chart is for), and otherwise
+        once a minute.
+
+        "On battery" is the engine's own reading — the UPS says so, or an outage timer is
+        running — the same one the fast poll cadence and the countdown use, so a UPS that
+        goes silent mid-outage still counts as part of it.
+        """
+        hc = self.cfg.history
+        if hc.enabled:
+            now = _now().timestamp()
+            for u in self.cfg.ups:
+                rt = self.ups_rt.get(u.id)
+                if rt is None:
+                    continue
+                st = rt.state
+                if st.last_poll is None and st.error is None:
+                    continue  # never polled yet: nothing to record
+                on_battery = bool(st.on_battery or rt.on_battery_since is not None)
+                state = (st.power_source or "unknown") if st.reachable else "unreachable"
+                key = (state, on_battery, bool(rt.triggered))
+                last = self._history_last.get(u.id)
+                if not (
+                    last is None
+                    or last[1] != key
+                    or on_battery
+                    or now - last[0] >= HISTORY_INTERVAL_S
+                ):
+                    continue
+                self._history_last[u.id] = (now, key)
+                self._history_buf.append((
+                    u.id, int(now), state, int(on_battery), int(bool(rt.triggered)),
+                    st.runtime_remaining_min if st.reachable else None,
+                    st.battery_charge_pct if st.reachable else None,
+                    st.load_pct if st.reachable else None,
+                ))
+        else:
+            # Off: nothing is recorded, and switching it back on starts afresh rather than
+            # comparing against a state from before the pause.
+            self._history_buf.clear()
+            self._history_last.clear()
+        # The prune runs either way: switching the recording off keeps what was recorded
+        # only until it ages out.
+        self._history_kick(hc.retention_days)
+
+    def _history_kick(self, retention_days: int) -> None:
+        """Start the writer thread for whatever is queued, unless it is still busy."""
+        if self._history_task is not None and not self._history_task.done():
+            overflow = len(self._history_buf) - HISTORY_BUFFER_MAX
+            if overflow > 0:
+                del self._history_buf[:overflow]  # the oldest go first
+            return
+        rows, self._history_buf = self._history_buf, []
+        prune = retention_days if self._history_prune_due else None
+        self._history_prune_due = False
+        if not rows and prune is None:
+            return
+        self._history_task = asyncio.create_task(
+            self._history_write(rows, prune), name="pve-usv-history"
+        )
+
+    async def _history_write(self, rows: list[tuple], prune_days: Optional[int]) -> None:
+        try:
+            await asyncio.to_thread(history.write, rows, prune_days)
+        except Exception as exc:  # noqa: BLE001 - a broken history must not spam the log
+            if not self._history_failing:
+                log.warning("Writing the history failed (rows are dropped): %s", exc)
+            self._history_failing = True
+        else:
+            if self._history_failing:
+                log.info("Writing the history works again.")
+            self._history_failing = False
 
     # -- scheduled self-test of the shutdown targets' credentials -----------
     async def _maybe_cluster_startup_check(self) -> None:
@@ -2246,43 +2385,30 @@ class Engine:
             # happened to trigger first (see _cluster_switches): the preview and the
             # self-test have always read it that way, and reading it differently here is
             # what made them promise steps the preparation then skipped.
-            ask_ceph, ask_disarm, _ask_all = self._cluster_switches(members)
-            want_ceph = ask_ceph and not info.ceph_unavailable
-            want_disarm = ask_disarm and not info.disarm_unavailable
+            sw = self._cluster_switches(members)
+            want_ceph = sw.ceph and not info.ceph_unavailable
+            want_disarm = sw.disarm and not info.disarm_unavailable
 
-            # The cluster-wide guest stop rides on the Ceph switch and has none of its
-            # own. On a hyper-converged cluster it is not an option but the first step of
-            # the official procedure: letting each node stop its own guests as it powers
-            # off drops the pool below min_size, and the guests still running on the
-            # survivors then block on IO and never finish shutting down. Without Ceph none
-            # of this applies and nothing changes.
-            self_guest, source = cluster.find_self_guest(
-                info.guests, ap.self_vmid, ap.self_node, own_hostname
-            )
-            # Stopping guests while the HA manager is live and holding resources only
-            # feeds it work. With zero HA resources there is nobody to restart them, so
-            # the disarm stops being a precondition.
-            guest_needs_disarm = info.ha_resources
-            if not want_ceph:
-                guest_block = "no Ceph"
-            elif info.guests_unreadable:
-                guest_block = "guest list unreadable"
-            elif guest_needs_disarm and not want_disarm:
-                guest_block = "needs HA disarm (PVE 9.2+)"
-            elif self_guest is None and not ap.self_external:
-                guest_block = f"own guest not identified ({source})"
-            else:
-                guest_block = ""
-            want_guests = want_ceph and not guest_block
+            # The cluster-wide guest stop: always with Ceph, where it is not an option but
+            # the first step of the official procedure (letting each node stop its own
+            # guests as it powers off drops the pool below min_size, and the guests still
+            # running on the survivors then block on IO and never finish shutting down),
+            # and on its own switch without Ceph (#43), where it trades the configured
+            # startup order for a shutdown that fits the battery. See _guest_plan().
+            plan = self._guest_plan(info, sw)
+            self_guest = plan.self_guest
+            guest_needs_disarm = plan.needs_disarm
+            guest_block = plan.block
+            want_guests = plan.want
 
             def _guest_clause() -> str:
-                return _prep_intent(ask_ceph, want_guests, guest_block)
+                return _prep_intent(plan.asked, want_guests, guest_block)
 
             if self.cfg.dry_run:
                 await self._emit(
                     f"DRY-RUN: cluster {name} would be prepared",
                     f"HA disarm: "
-                    f"{_prep_intent(ask_disarm, want_disarm, 'needs PVE 9.2+')}; "
+                    f"{_prep_intent(sw.disarm, want_disarm, 'needs PVE 9.2+')}; "
                     f"guest shutdown: {_guest_clause()}"
                     + (
                         f" ({len(cluster.stop_targets(info.guests, self_guest, own_hostname))} "
@@ -2292,7 +2418,7 @@ class Engine:
                         if want_guests
                         else ""
                     )
-                    + f"; Ceph flags: {_prep_intent(ask_ceph, want_ceph, 'no Ceph')}"
+                    + f"; Ceph flags: {_prep_intent(sw.ceph, want_ceph, 'no Ceph')}"
                     + self._unit_clause(host, members, due)
                     + ". NOTHING is changed.",
                     db.WARNING,
@@ -2300,19 +2426,23 @@ class Engine:
                 extra += self._unit_additions(host, name, members, eligible, extra, reason)
                 continue
 
-            if not want_ceph and not want_disarm:
+            if not want_ceph and not want_disarm and not want_guests:
                 # Quiet, not a failure: the operator asked for features this cluster does
                 # not have. Saying it once per outage beats a CRITICAL that reads as if
                 # the shutdown went wrong.
                 self._log_quiet(
                     f"Cluster {name}: nothing to prepare",
                     f"HA disarm: "
-                    f"{_prep_intent(ask_disarm, False, 'needs PVE 9.2+')}; "
+                    f"{_prep_intent(sw.disarm, False, 'needs PVE 9.2+')}; "
                     f"guest shutdown: {_guest_clause()}; "
-                    f"Ceph flags: {_prep_intent(ask_ceph, False, 'no Ceph')}. "
+                    f"Ceph flags: {_prep_intent(sw.ceph, False, 'no Ceph')}. "
                     f"The nodes are shut down normally.",
                     db.INFO,
                 )
+                # A guest stop that was asked for and cannot run is not "nothing": without
+                # Ceph it may be the only step ticked, and its refusal must still be said.
+                if plan.requested and guest_block:
+                    await self._report_guest_skip(name, plan, want_ceph)
                 extra += self._unit_additions(host, name, members, eligible, extra, reason)
                 continue
 
@@ -2329,7 +2459,7 @@ class Engine:
             await self._emit(
                 f"Cluster {name}: preparing for shutdown",
                 f"HA disarm: "
-                f"{_prep_intent(ask_disarm, want_disarm, 'needs PVE 9.2+')}; "
+                f"{_prep_intent(sw.disarm, want_disarm, 'needs PVE 9.2+')}; "
                 f"guest shutdown: {_guest_clause()}"
                 + (
                     f" ({len(cluster.stop_targets(info.guests, self_guest, own_hostname))} "
@@ -2339,7 +2469,7 @@ class Engine:
                     if want_guests
                     else ""
                 )
-                + f"; Ceph flags: {_prep_intent(ask_ceph, want_ceph, 'no Ceph')}."
+                + f"; Ceph flags: {_prep_intent(sw.ceph, want_ceph, 'no Ceph')}."
                 + self._unit_clause(host, members, due)
                 + f" The nodes of this cluster wait up to {budget}s for this"
                 + (
@@ -2350,38 +2480,9 @@ class Engine:
                 db.WARNING,
             )
 
-            # Refusals worth their own CRITICAL, because each one means the cluster is
-            # about to lose power with its guests still writing to Ceph — the exact
-            # failure the guest stop exists to prevent. Said before the work so it is not
-            # buried in a result line a minute later. "no Ceph" is not among them: there
-            # the guest stop is simply not applicable.
-            if want_ceph and guest_block and guest_block != "no Ceph":
-                await self._emit(
-                    f"Cluster {name}: guest shutdown skipped",
-                    {
-                        "guest list unreadable": (
-                            "The cluster's guest list could not be read (the token needs "
-                            "VM.Audit), so it is unknown what would have to stop. Note "
-                            "that this endpoint filters by privilege instead of refusing, "
-                            "so an empty answer is never taken to mean 'no guests'."
-                        ),
-                        "needs HA disarm (PVE 9.2+)": (
-                            "HA manages guests on this cluster and cannot be disarmed "
-                            "(disarm-ha needs Proxmox VE 9.2 or newer, or the switch is "
-                            "off), so the HA manager would restart the guests as fast as "
-                            "they are stopped."
-                        ),
-                    }.get(
-                        guest_block,
-                        "This appliance's own guest could not be identified "
-                        f"({source}), and stopping every guest would have stopped this "
-                        "appliance in the middle of the outage. Pick it under Settings "
-                        "-> Appliance.",
-                    )
-                    + " The nodes are shut down without it, which is what earlier "
-                    "releases did.",
-                    db.CRITICAL,
-                )
+            # Said before the work, so it is not buried in a result line a minute later.
+            if plan.requested and guest_block:
+                await self._report_guest_skip(name, plan, want_ceph)
 
             result = await cluster.prepare(
                 host,
@@ -2416,20 +2517,25 @@ class Engine:
 
             extra += self._unit_additions(host, name, members, eligible, extra, reason)
             # The state the field test ran into: the preparation is cluster-wide — HA
-            # disarmed, with Ceph every guest stopped — while only the nodes whose own UPS
-            # triggered go down. The rest stand there without guests, without HA and with
-            # the maintenance flags set, and on a hyper-converged cluster their storage is
-            # gone too once the monitors follow. Said out loud rather than left to be
-            # discovered afterwards.
-            if not _ask_all and len(due) < len(members):
+            # disarmed, with the guest stop every guest stopped — while only the nodes
+            # whose own UPS triggered go down. The rest stand there without guests,
+            # without HA and with the maintenance flags set, and on a hyper-converged
+            # cluster their storage is gone too once the monitors follow. Said out loud
+            # rather than left to be discovered afterwards.
+            if not sw.unit and len(due) < len(members):
+                left = ["HA disarmed"]
+                if want_guests:
+                    left.append("every guest stopped")
+                if want_ceph:
+                    left.append("the Ceph maintenance flags set")
                 await self._emit(
                     f"Cluster {name}: only part of the cluster is shut down",
                     f"{len(due)} of {len(members)} nodes triggered, and 'shut the whole "
                     f"cluster down' is off, so "
                     f"{', '.join(m.name for m in members if m not in due)} keep running — "
-                    f"with HA disarmed"
-                    + (", every guest stopped and the Ceph maintenance flags set"
-                       if want_ceph else "")
+                    f"with "
+                    + (", ".join(left[:-1]) + " and " + left[-1] if len(left) > 1
+                       else left[0])
                     + ". Switch the option on, or feed every node of this cluster from "
                     "UPS devices that fail together.",
                     db.CRITICAL,
@@ -2460,6 +2566,45 @@ class Engine:
             if self.host_states.get(host.key, {}).get("cluster_name") not in blocked
             and host.key not in self.cluster_inspect_failed
         ]
+
+    async def _report_guest_skip(self, name: str, plan: GuestPlan, want_ceph: bool) -> None:
+        """Say why a cluster-wide guest stop that was asked for will not run.
+
+        CRITICAL with Ceph, because there each reason means the cluster is about to lose
+        power with its guests still writing to Ceph — the exact failure the guest stop
+        exists to prevent. Without Ceph a WARNING: the nodes then stop their own guests as
+        they power off, slower but intact. "no Ceph" (only Ceph asked, none here) never
+        gets here — plan.requested is False then, the step simply does not apply.
+        """
+        await self._emit(
+            f"Cluster {name}: guest shutdown skipped",
+            {
+                "guest list unreadable": (
+                    "The cluster's guest list could not be read (the token needs "
+                    "VM.Audit), so it is unknown what would have to stop. Note that this "
+                    "endpoint filters by privilege instead of refusing, so an empty "
+                    "answer is never taken to mean 'no guests'."
+                ),
+                "needs HA disarm (PVE 9.2+)": (
+                    "HA manages guests on this cluster and cannot be disarmed (disarm-ha "
+                    "needs Proxmox VE 9.2 or newer, or the switch is off), so the HA "
+                    "manager would restart the guests as fast as they are stopped."
+                ),
+            }.get(
+                plan.block,
+                "This appliance's own guest could not be identified "
+                f"({plan.source}), and stopping every guest would have stopped this "
+                "appliance in the middle of the outage. Pick it under Settings -> "
+                "Appliance.",
+            )
+            + (
+                " The nodes are shut down without it, which is what earlier releases did."
+                if want_ceph
+                else " The nodes are shut down without it; each one stops its own guests "
+                "as it powers off, in their configured order."
+            ),
+            db.CRITICAL if want_ceph else db.WARNING,
+        )
 
     def _known_cluster(
         self, host: HostConfig
@@ -2576,13 +2721,14 @@ class Engine:
         return list(found.values())
 
     @staticmethod
-    def _cluster_switches(members: list[PveHostConfig]) -> tuple[bool, bool, bool]:
-        """The three cluster switches as ONE answer per cluster: (ceph, disarm, all).
+    def _cluster_switches(members: list[PveHostConfig]) -> ClusterSwitches:
+        """The cluster switches as ONE answer per cluster.
 
         They are edited per host card because that is where a host is configured, but
         every one of them describes something cluster-wide: Ceph maintenance flags, the
-        HA manager's arm state, and whether the cluster goes down as a unit. Nothing
-        stops them from being ticked differently on two nodes of the same cluster.
+        HA manager's arm state, whether the cluster goes down as a unit, and the guest
+        stop. Nothing stops them from being ticked differently on two nodes of the same
+        cluster.
 
         Answered in one place because the answer used to depend on who was asking. The
         preparation read them off the candidate that happened to trigger first, while the
@@ -2596,10 +2742,45 @@ class Engine:
         _check_cluster_feeds() reports a cluster whose members disagree, so this never
         silently papers over a configuration mistake.
         """
-        return (
-            any(h.cluster_ceph for h in members),
-            any(h.cluster_ha_disarm for h in members),
-            any(h.cluster_shutdown_all for h in members),
+        return ClusterSwitches(
+            ceph=any(h.cluster_ceph for h in members),
+            disarm=any(h.cluster_ha_disarm for h in members),
+            unit=any(h.cluster_shutdown_all for h in members),
+            guest_stop=any(h.cluster_guest_stop for h in members),
+        )
+
+    def _guest_plan(self, info: "cluster.ClusterInfo", sw: ClusterSwitches) -> GuestPlan:
+        """Whether this cluster's guests are stopped cluster-wide first, and if not, why.
+
+        Pure — no I/O, built from one inspection — and the one place the question is
+        answered, so the preparation, its dry-run, the preview and the self-test cannot
+        disagree about it.
+        """
+        ap = self.cfg.appliance
+        want_ceph = sw.ceph and not info.ceph_unavailable
+        want_disarm = sw.disarm and not info.disarm_unavailable
+        # Ceph asks for it only where there is Ceph; the guest-stop tick asks regardless.
+        requested = want_ceph or sw.guest_stop
+        self_guest, source = cluster.find_self_guest(
+            info.guests, ap.self_vmid, ap.self_node, _hostname()
+        )
+        # Stopping guests while the HA manager is live and holding resources only feeds
+        # it work. With zero HA resources there is nobody to restart them, so the disarm
+        # stops being a precondition.
+        needs_disarm = info.ha_resources
+        if not requested:
+            block = "no Ceph" if sw.ceph else ""
+        elif info.guests_unreadable:
+            block = "guest list unreadable"
+        elif needs_disarm and not want_disarm:
+            block = "needs HA disarm (PVE 9.2+)"
+        elif self_guest is None and not ap.self_external:
+            block = f"own guest not identified ({source})"
+        else:
+            block = ""
+        return GuestPlan(
+            asked=sw.guests, requested=requested, block=block, self_guest=self_guest,
+            source=source, needs_disarm=needs_disarm,
         )
 
     def _unit_clause(
@@ -2608,7 +2789,7 @@ class Engine:
         """The "n of m nodes" half-sentence for the preparation events."""
         if len(members) <= 1:
             return ""
-        _ceph, _disarm, want_all = self._cluster_switches(members)
+        want_all = self._cluster_switches(members).unit
         part = f" {len(due)} of {len(members)} nodes triggered"
         if len(due) == len(members):
             return part + "."
@@ -2625,12 +2806,12 @@ class Engine:
     ) -> list[tuple[HostConfig, str]]:
         """Nodes of this cluster that go down with it although nothing triggered for them.
 
-        The preparation is cluster-wide by nature — it disarms HA and, with Ceph, stops
-        every guest in the cluster. Shutting down only the nodes whose own UPS triggered
+        The preparation is cluster-wide by nature — it disarms HA and, with Ceph or the
+        guest stop, stops every guest in the cluster. Shutting down only the nodes whose own UPS triggered
         leaves the others without guests, without HA and (once the monitors follow)
         without storage. This is what keeps the two halves in step.
         """
-        if not self._cluster_switches(members)[2]:
+        if not self._cluster_switches(members).unit:
             return []
         taken = {h.key for h, _ in eligible} | {h.key for h, _ in extra}
         out = []
@@ -2790,12 +2971,14 @@ class Engine:
             # preparation sets Ceph flags" cannot disagree. This used to match on the
             # host_states stamp alone, which the preparation's cold path fills from the
             # API's node list instead.
-            wants_ceph, wants_disarm, _wants_all = self._cluster_switches(
-                self._cluster_members(info, name)
-            )
+            sw = self._cluster_switches(self._cluster_members(info, name))
+            wants_ceph, wants_disarm = sw.ceph, sw.disarm
+            # Requested, not merely asked: a Ceph tick on a cluster without Ceph stops no
+            # guest, so it must not demand the guest privileges either.
+            wants_guests = self._guest_plan(info, sw).requested
 
             missing = cluster.missing_privileges(
-                info, wants_ceph, wants_disarm, want_guests=wants_ceph
+                info, wants_ceph, wants_disarm, want_guests=wants_guests
             )
             if missing:
                 warned += 1
@@ -2809,17 +2992,17 @@ class Engine:
 
             # How the nodes are fed decides whether a partial outage is possible at
             # all — and that question stands whether or not Ceph is involved.
-            warned += await self._check_cluster_feeds(name, info, wants_ceph)
+            warned += await self._check_cluster_feeds(name, info, wants_guests)
 
             # And the mirror image of that question: a node the preparation reaches but
             # the shutdown never takes along.
-            warned += await self._check_cluster_optout(name, info, wants_ceph)
+            warned += await self._check_cluster_optout(name, info, wants_guests, wants_ceph)
 
             # --- the appliance's own guest ------------------------------------
-            # Everything below only matters once the guest stop is in play, i.e. with
-            # Ceph. On a plain cluster none of it applies and none of it is said.
-            if wants_ceph:
-                warned += await self._check_self_guest(name, info)
+            # Everything below only matters once the guest stop is in play — with Ceph,
+            # or switched on by itself. Otherwise none of it applies and none of it is said.
+            if wants_guests:
+                warned += await self._check_self_guest(name, info, wants_ceph)
 
             # Asked for a feature this cluster does not have. Only a warning — the
             # shutdown itself is unaffected (the step is skipped, see _prepare_clusters)
@@ -2943,7 +3126,7 @@ class Engine:
                 )
 
     async def _check_cluster_feeds(
-        self, name: str, info: "cluster.ClusterInfo", wants_ceph: bool
+        self, name: str, info: "cluster.ClusterInfo", wants_guests: bool
     ) -> int:
         """Warn when the nodes of one cluster can be triggered independently.
 
@@ -2978,7 +3161,7 @@ class Engine:
             body = (
                 "A single UPS device failing therefore shuts down only the nodes it "
                 "feeds, while the preparation has already disarmed HA"
-                + (" and stopped every guest in the cluster" if wants_ceph else "")
+                + (" and stopped every guest in the cluster" if wants_guests else "")
                 + " for all of them. Switch 'shut the whole cluster down as a unit' on, "
                 "or feed every node from UPS devices that fail together."
             )
@@ -3010,7 +3193,7 @@ class Engine:
     async def _check_cluster_switch_agreement(
         self, name: str, members: list[PveHostConfig]
     ) -> int:
-        """Warn when one cluster's nodes disagree about the three cluster switches.
+        """Warn when one cluster's nodes disagree about the cluster switches.
 
         They are edited per host card but every one of them acts on the whole cluster, so
         "ticked on pve01, not on pve02" is not two settings but one contradiction. The
@@ -3019,22 +3202,25 @@ class Engine:
         skipping one that was asked for costs the storage — but resolving it silently
         would leave an operator reading their own configuration wrongly.
 
-        Only the two that were unreported: the "as a unit" split is described in context
-        by the feeds warning next door, which is where it changes what actually happens.
+        The guest stop is compared by its effective value — ticked, or included by the
+        Ceph switch — so a node with Ceph and another with only the guest stop agree.
         """
         if len(members) < 2:
             return 0
         warned = 0
-        for label, field, effect in (
-            ("Set Ceph maintenance flags", "cluster_ceph",
+        for label, is_on, effect in (
+            ("Set Ceph maintenance flags", lambda h: h.cluster_ceph,
              "the flags are set and every guest in the cluster is stopped first"),
-            ("Disarm HA", "cluster_ha_disarm",
+            ("Disarm HA", lambda h: h.cluster_ha_disarm,
              "the HA manager is disarmed for the whole cluster"),
-            ("Shut the whole cluster down as a unit", "cluster_shutdown_all",
+            ("Shut the whole cluster down as a unit", lambda h: h.cluster_shutdown_all,
              "every node of the cluster is shut down as soon as one is due"),
+            ("Stop all guests cluster-wide first",
+             lambda h: h.cluster_ceph or h.cluster_guest_stop,
+             "every guest in the cluster is stopped before the first node goes down"),
         ):
-            on = [h.name for h in members if getattr(h, field)]
-            off = [h.name for h in members if not getattr(h, field)]
+            on = [h.name for h in members if is_on(h)]
+            off = [h.name for h in members if not is_on(h)]
             if not on or not off:
                 continue
             warned += 1
@@ -3049,7 +3235,7 @@ class Engine:
         return warned
 
     async def _check_cluster_optout(
-        self, name: str, info: "cluster.ClusterInfo", wants_ceph: bool
+        self, name: str, info: "cluster.ClusterInfo", wants_guests: bool, wants_ceph: bool
     ) -> int:
         """Warn about a node the preparation acts on but the shutdown leaves behind.
 
@@ -3057,8 +3243,8 @@ class Engine:
         exist because that rule is right: a node whose "cluster member" box is deliberately
         unticked must not be powered off by another node's outage. What the tick does NOT
         opt it out of is the preparation, which is cluster-wide by nature — the HA manager
-        is disarmed for the whole cluster, and with Ceph every guest in it is stopped,
-        including the ones running on that node.
+        is disarmed for the whole cluster, and with the guest stop every guest in it is
+        stopped, including the ones running on that node.
 
         So it is left standing without HA, without its guests and, on a hyper-converged
         cluster, without storage once the monitors follow — and nothing said so. Every
@@ -3102,24 +3288,27 @@ class Engine:
             + ". The preparation another node triggers still acts on the whole cluster: "
             "HA is disarmed cluster-wide"
             + (", and every guest in the cluster is stopped — including the ones running "
-               "there" if wants_ceph else "")
+               "there" if wants_guests else "")
             + ". The shutdown, however, stops at the ticked nodes, so "
             + ("that machine keeps" if len(outsiders) == 1 else "those machines keep")
             + " running without HA"
-            + (", without guests and with the Ceph maintenance flags set"
-               if wants_ceph else "")
+            + (", without guests" if wants_guests else "")
+            + (" and with the Ceph maintenance flags set" if wants_ceph else "")
             + ". Tick the option there as well, or untick it on the other nodes of this "
             "cluster.",
             db.WARNING,
         )
         return 1
 
-    async def _check_self_guest(self, name: str, info: "cluster.ClusterInfo") -> int:
+    async def _check_self_guest(
+        self, name: str, info: "cluster.ClusterInfo", wants_ceph: bool = True
+    ) -> int:
         """Warnings around the cluster-wide guest stop. Returns how many were emitted.
 
         Split out of _check_clusters because it is a self-contained question — "can this
         appliance stop the other guests without stopping itself, and will it survive
-        doing so" — and because all of it is pointless without Ceph.
+        doing so" — and because all of it is pointless without the guest stop. The two
+        Ceph-only hints at the end (storage check, MON order) need the Ceph switch too.
         """
         ap = self.cfg.appliance
         warned = 0
@@ -3190,7 +3379,7 @@ class Engine:
                     db.WARNING,
                 )
 
-        advisory = cluster.advisory_privileges(info)
+        advisory = cluster.advisory_privileges(info) if wants_ceph else []
         if advisory:
             self._log_quiet(
                 f"Cluster {name}: storage check unavailable",
@@ -3198,6 +3387,9 @@ class Engine:
                 f"appliance's own guest lives on Ceph. Everything else works.",
                 db.INFO,
             )
+
+        if not wants_ceph:
+            return warned
 
         # MON ordering: advice, never enforcement (see cluster.mon_order_report).
         order = [
@@ -3450,6 +3642,8 @@ class Engine:
                 "uptime_s": int((_now() - self.started_at).total_seconds()),
                 "engine_state": self.state,
                 "dry_run": self.cfg.dry_run,
+                # Whether the History tab exists at all (#37).
+                "history_enabled": self.cfg.history.enabled,
                 "config_valid": self.cfg.configured,
                 "alarm": self.alarm_active,
                 "last_selftest_at": (
@@ -3544,6 +3738,9 @@ class Engine:
         """
         out = []
         for name, info in self.cluster_states.items():
+            plan = self._guest_plan(
+                info, self._cluster_switches(self._cluster_members(info, name))
+            )
             out.append(
                 {
                     "name": name,
@@ -3564,6 +3761,11 @@ class Engine:
                     "mon_nodes": list(info.mon_nodes),
                     "self_guest_vmid": info.self_guest.vmid if info.self_guest else None,
                     "self_guest_on_ceph": info.self_guest_on_ceph,
+                    # The guest stop will run here (Ceph, or its own switch) — and if so,
+                    # whether it is held up by an unknown own guest. The dashboard says
+                    # that where the operator looks, not only in the event log.
+                    "guest_stop": plan.requested,
+                    "self_guest_missing": plan.block.startswith("own guest"),
                     "prep_steps": list(self.cluster_prep_steps.get(name, [])),
                 }
             )

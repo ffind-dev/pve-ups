@@ -72,6 +72,12 @@ class MibProfile:
     objects: tuple[MibObject, ...]
     anchor: str                         # OID whose answer proves this MIB is implemented
     manufacturer: Optional[str] = None  # constant when the MIB has no manufacturer object
+    # One GET per object instead of one GET for the whole profile. For agents that time
+    # out on a request carrying several objects although each of them answers on its own
+    # (seen on CyberPower cards, #40). Costs a round trip per object — a few hundred
+    # milliseconds on a LAN — but never a second timeout: the first transport error ends
+    # the poll exactly as the single multi-object GET would have.
+    single_varbind: bool = False
 
     @property
     def oids(self) -> list[str]:
@@ -232,11 +238,75 @@ APC = MibProfile(
     ),
 )
 
+# --- CyberPower CPS-MIB (enterprise 3808) ------------------------------------
+# The RMCARD family. Some of these cards implement no RFC 1628 at all, and at least one
+# firmware does not answer a GET carrying several objects — not even with an error, it
+# simply times out — while every object answers when asked on its own (#40). Hence
+# single_varbind. Cards that are rebranded CyberPower hardware answer the same MIB.
+OID_CPS_MODEL = "1.3.6.1.4.1.3808.1.1.1.1.1.1.0"            # upsBaseIdentModel
+OID_CPS_OUTPUT_STATUS = "1.3.6.1.4.1.3808.1.1.1.4.1.1.0"    # upsBaseOutputStatus
+OID_CPS_BATTERY_STATUS = "1.3.6.1.4.1.3808.1.1.1.2.1.1.0"   # upsBaseBatteryStatus
+OID_CPS_TIME_ON_BATTERY = "1.3.6.1.4.1.3808.1.1.1.2.1.2.0"  # upsBaseBatteryTimeOnBattery
+OID_CPS_CAPACITY = "1.3.6.1.4.1.3808.1.1.1.2.2.1.0"         # upsAdvanceBatteryCapacity
+# .2.2.4, not APC's .2.2.3 — the two MIBs look alike but are not interchangeable.
+OID_CPS_RUNTIME = "1.3.6.1.4.1.3808.1.1.1.2.2.4.0"          # upsAdvanceBatteryRunTimeRemaining
+OID_CPS_LOAD = "1.3.6.1.4.1.3808.1.1.1.4.2.3.0"             # upsAdvanceOutputLoad (%)
+
+# upsBaseOutputStatus enum -> normalised power source string. Boost, buck, ECO and
+# overload all still run on mains; sleep and off deliver no output at all.
+_CPS_OUTPUT_STATUS = {
+    1: "unknown",
+    2: "mains",     # onLine
+    3: "battery",   # onBattery
+    4: "mains",     # onBoost (still on mains, boosting a low input voltage)
+    5: "none",      # onSleep
+    6: "none",      # off
+    7: "other",     # rebooting
+    8: "mains",     # onECO
+    9: "bypass",    # onBypass
+    10: "mains",    # onBuck (still on mains, trimming a high input voltage)
+    11: "mains",    # onOverload (on mains, but overloaded)
+}
+
+# upsBaseBatteryStatus enum -> normalised string. A missing battery counts as "low", as
+# in the APC profile: the engine only acts on it while the UPS is also on battery.
+_CPS_BATTERY_STATUS = {
+    1: "unknown",
+    2: "normal",    # batteryNormal
+    3: "low",       # batteryLow
+    4: "low",       # batteryNotPresent
+}
+
+CYBERPOWER = MibProfile(
+    id="cyberpower",
+    label="CyberPower",
+    anchor=OID_CPS_OUTPUT_STATUS,
+    # Like PowerNet, the CPS-MIB has no manufacturer object.
+    manufacturer="CyberPower",
+    single_varbind=True,
+    objects=(
+        MibObject(OID_CPS_MODEL, "upsBaseIdentModel", "model", KIND_TEXT),
+        MibObject(OID_CPS_OUTPUT_STATUS, "upsBaseOutputStatus", "power_source", KIND_ENUM,
+                  enum=_CPS_OUTPUT_STATUS, trigger="on_battery"),
+        MibObject(OID_CPS_BATTERY_STATUS, "upsBaseBatteryStatus", "battery_status",
+                  KIND_ENUM, enum=_CPS_BATTERY_STATUS, trigger="battery_low"),
+        MibObject(OID_CPS_TIME_ON_BATTERY, "upsBaseBatteryTimeOnBattery",
+                  "seconds_on_battery", KIND_TICKS_S),
+        MibObject(OID_CPS_RUNTIME, "upsAdvanceBatteryRunTimeRemaining",
+                  "runtime_remaining_min", KIND_TICKS_MIN, trigger="runtime"),
+        MibObject(OID_CPS_CAPACITY, "upsAdvanceBatteryCapacity", "battery_charge_pct",
+                  KIND_PCT, trigger="charge"),
+        MibObject(OID_CPS_LOAD, "upsAdvanceOutputLoad", "load_pct", KIND_PCT),
+    ),
+)
+
 DEFAULT_PROFILE = RFC1628
 
 # Vendor profiles come after the standard: in "auto" mode the last profile whose anchor
 # answers wins, so a device that speaks both is read on the more precise vendor MIB.
-PROFILES: dict[str, MibProfile] = {RFC1628.id: RFC1628, APC.id: APC}
+PROFILES: dict[str, MibProfile] = {
+    RFC1628.id: RFC1628, APC.id: APC, CYBERPOWER.id: CYBERPOWER,
+}
 
 # Flat OID -> object registry across all profiles (OIDs are globally unique), so the probe
 # can name and interpret any object without knowing which profile it came from.
@@ -731,6 +801,31 @@ async def poll(cfg: SnmpConfig) -> UpsState:
             objects = [ObjectType(ObjectIdentity(oid)) for oid in oids]
             return await getCmd(engine, auth, transport, ContextData(), *objects)
 
+        async def get_each(oids: list[str]):
+            """The same answer as get(), collected one object per request.
+
+            A refused object (v1 noSuchName, or any other error status for that one
+            object) becomes the v2c "missing" sentinel, so the rest of poll() and
+            _map_state() treat it as they treat every missing object. A transport error
+            ends the poll at once, exactly like a failed get(): a dead device still costs
+            one timeout, not one per object.
+            """
+            from pysnmp.proto import rfc1905
+
+            collected = []
+            for oid in oids:
+                error_indication, error_status, _, var_binds = await get([oid])
+                if error_indication:
+                    return error_indication, 0, 0, []
+                if error_status or not var_binds:
+                    collected.append((oid, rfc1905.noSuchObject))
+                else:
+                    collected.extend(var_binds)
+            return None, 0, 0, collected
+
+        def read(p: MibProfile):
+            return get_each(p.oids) if p.single_varbind else get(p.oids)
+
         candidates = _profiles_for(cfg)
         profile = candidates[0]
         auto = len(candidates) > 1
@@ -743,7 +838,11 @@ async def poll(cfg: SnmpConfig) -> UpsState:
         vendors = candidates[1:] if auto and cfg.version != SnmpVersion.v1 else []
         oids = profile.oids + [v.anchor for v in vendors]
 
-        error_indication, error_status, error_index, var_binds = await get(oids)
+        # Without vendor anchors to append, this is exactly the profile's own read — which
+        # for a single_varbind profile must not go out as one multi-object GET.
+        error_indication, error_status, error_index, var_binds = await (
+            get(oids) if vendors else read(profile)
+        )
 
         if error_indication:
             # Transport level (timeout, wrong v3 user, DNS): the device is unreachable,
@@ -755,22 +854,54 @@ async def poll(cfg: SnmpConfig) -> UpsState:
         # reaching it — and a refused GET is still an answer, not silence.
         state.answered = True
         if error_status:
-            if not (auto and cfg.version == SnmpVersion.v1):
-                state.error = f"{error_status.prettyPrint()} at index {error_index}"
+            refusal = f"{error_status.prettyPrint()} at index {error_index}"
+            if not auto:
+                state.error = refusal
                 return state
-            # SNMPv1 + "auto": the GET was refused because an object is missing, which is
-            # exactly how an APC card without RFC 1628 answers. Try the vendor MIBs.
-            for vendor in candidates[1:]:
-                error_indication, error_status, error_index, var_binds = await get(vendor.oids)
+            if vendors and (_coerce_int(error_index) or 0) > len(profile.oids):
+                # Refused over one of the vendor anchors appended above. A conforming v2c
+                # agent never does that — a missing object is a per-varbind sentinel there
+                # — but real cards do: a CyberPower card answers the missing APC anchor
+                # with v1's noSuchName, which used to make "auto" fail on every poll of a
+                # UPS that is perfectly readable. Ask each anchor on its own instead: one
+                # round trip per vendor, and only from an agent that just answered.
+                found = []
+                for vendor in vendors:
+                    error_indication, error_status, _, var_binds = await get([vendor.anchor])
+                    if error_indication:
+                        state.error = str(error_indication)
+                        return state
+                    if not error_status and var_binds and _usable(var_binds[0][1]):
+                        found.append(vendor)
+                # Same rule as the regular path: the last vendor whose anchor answers wins.
+                target = found[-1] if found else profile
+                error_indication, error_status, error_index, var_binds = await read(target)
                 if error_indication:
                     state.error = str(error_indication)
                     return state
-                if not error_status:
-                    profile = vendor
-                    break
+                if error_status:
+                    state.error = f"{error_status.prettyPrint()} at index {error_index}"
+                    return state
+                profile = target
+                vendors = []  # resolved: the anchor pass below has nothing left to do
             else:
-                state.error = f"{error_status.prettyPrint()} at index {error_index}"
-                return state
+                # The standard GET was refused because one of its own objects is missing,
+                # which is how SNMPv1 answers it on a card without RFC 1628 (an APC NMC1),
+                # and how a non-conforming v2c agent does. Try the vendor MIBs. A profile
+                # read one object per request is never refused as a whole, so it only
+                # counts when at least one of its objects actually answered.
+                for vendor in candidates[1:]:
+                    error_indication, error_status, error_index, var_binds = await read(vendor)
+                    if error_indication:
+                        state.error = str(error_indication)
+                        return state
+                    if not error_status and any(_usable(v) for _, v in var_binds):
+                        profile = vendor
+                        break
+                else:
+                    state.error = refusal
+                    return state
+                vendors = []  # resolved, as above
 
         values: dict[str, object] = {}
         for var_bind in var_binds:
@@ -781,7 +912,7 @@ async def poll(cfg: SnmpConfig) -> UpsState:
         for vendor in vendors:
             if not _usable(values.get(vendor.anchor)):
                 continue
-            error_indication, error_status, error_index, var_binds = await get(vendor.oids)
+            error_indication, error_status, error_index, var_binds = await read(vendor)
             if error_indication:
                 state.error = str(error_indication)
                 return state
@@ -885,12 +1016,45 @@ def _probe_summary(
         )
         parts.append(
             f"This device also answers {DEFAULT_PROFILE.label}, but the {profile.label} MIB "
-            "is preferred: it reports the remaining runtime far more precisely."
+            "is preferred: it is the vendor's own and usually tells more apart (an APC "
+            "self-test from an outage, for one)."
             if standard_answered else
             f"This device does not implement {DEFAULT_PROFILE.label}, so it is read via the "
             f"{profile.label} MIB."
         )
     return " ".join(parts)
+
+
+def batching_hint(cfg: SnmpConfig, state: UpsState, result: ProbeResult) -> Optional[str]:
+    """Explain a poll that got no answer while the per-object probe did (#40).
+
+    The test button runs both, so this is the one place the pattern is visible: an agent
+    that times out on a GET carrying several objects, yet answers each of them on its own.
+    In "auto" mode the first GET always carries several (the standard profile plus the
+    vendor anchors), so such a card can only work with its MIB pinned — and only a MIB
+    that is read one object at a time. Nothing in the regular poll retries on its own:
+    a second attempt after every timeout would double what a dead UPS costs.
+    """
+    if state.answered or not result.reachable:
+        return None
+    profile = PROFILES.get(result.mib)
+    if profile is None:
+        return None
+    if profile.single_varbind:
+        if _selected_mib(cfg) != SnmpMib.auto:
+            return None  # already read one object at a time: the timeout is something else
+        return (
+            "The regular poll got no answer, yet the objects answer when asked one at a "
+            f"time: this card does not handle a request for several objects at once. Set "
+            f"this UPS's MIB to '{profile.label}' explicitly — that MIB is then read one "
+            "object per request."
+        )
+    return (
+        "The regular poll got no answer, yet the objects answer when asked one at a time. "
+        "If this repeats, the card cannot handle a request for several objects at once, "
+        f"which reading {profile.label} requires — please report the model in the "
+        "project's issue tracker."
+    )
 
 
 async def probe(cfg: SnmpConfig) -> ProbeResult:
@@ -899,7 +1063,7 @@ async def probe(cfg: SnmpConfig) -> ProbeResult:
     poll() sends a whole profile in one GET: fast, but a single object the device does not
     implement makes the whole PDU fail under SNMPv1, so a user cannot tell a wrong
     community from a UPS that simply lacks upsSecondsOnBattery. One GET per object answers
-    exactly that question. In "auto" mode both MIBs are walked, which is what turns
+    exactly that question. In "auto" mode every MIB is walked, which is what turns
     "nothing works" into "your card has no RFC 1628, but PowerNet answers everything".
     Never raises; the poll loop keeps using poll() unchanged.
     """
@@ -911,7 +1075,7 @@ async def probe(cfg: SnmpConfig) -> ProbeResult:
         return ProbeEntry(oid=oid, name=_object_name(oid), status="skipped")
 
     # Nothing can be sent on either early-out, so report the profile that would have been
-    # asked first rather than pretending both MIBs were tried.
+    # asked first rather than pretending every MIB was tried.
     if not cfg.configured:
         result.entries = [_skipped(oid) for oid in candidates[0].oids]
         result.summary = "SNMP not configured (no host set)."

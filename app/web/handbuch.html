@@ -167,7 +167,7 @@
   <header class="topbar">
     <span class="brand">
       <svg class="mark icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3z"/></svg>
-      PVE-UPS <span class="sub">Benutzerhandbuch · v4.2.0</span>
+      PVE-UPS <span class="sub">Benutzerhandbuch · v4.3.0</span>
     </span>
     <span class="spacer"></span>
     <a class="btn" href="https://github.com/ffind-dev/pve-ups" target="_blank"
@@ -219,7 +219,7 @@
         <h3>Kernfunktionen</h3>
         <ul>
           <li>Überwachung <b>einer oder mehrerer USVs</b> — mit SNMP-Netzwerkkarte
-          (Standard RFC&nbsp;1628 <i>oder</i> Hersteller-MIB wie APC PowerNet,
+          (Standard RFC&nbsp;1628 <i>oder</i> Hersteller-MIB: APC PowerNet, CyberPower,
           <b>SNMP v1/v2c/v3</b>, reine Python-Implementierung) oder über einen
           <b>NUT-Server</b>, worüber USB- und seriell angeschlossene USVs gelesen
           werden.</li>
@@ -251,8 +251,8 @@
             <ul>
               <li>mit <b>SNMP-Netzwerkkarte</b>, die die Standard-<b>RFC-1628-UPS-MIB</b>
               (herstellerunabhängig) oder eine unterstützte <b>Hersteller-MIB</b>
-              bereitstellt — APC PowerNet, womit auch APC-Karten ohne RFC 1628 erfasst sind
-              (siehe <a href="#snmp">Abschnitt 5</a>), oder</li>
+              bereitstellt — APC PowerNet oder CyberPower, womit auch Karten ohne RFC 1628
+              erfasst sind (siehe <a href="#snmp">Abschnitt 5</a>), oder</li>
               <li>per <b>USB- oder seriellem Kabel</b> an einer Maschine, auf der ein
               <b>NUT-Server</b> (<code>upsd</code>) läuft — siehe Abschnitt 5.</li>
             </ul>
@@ -288,6 +288,39 @@
 # z.B. mit fester IP:
 curl -fsSL https://github.com/ffind-dev/pve-ups/releases/latest/download/install.sh | bash -s -- \
   --ctid 950 --ip 10.0.0.50/24 --gateway 10.0.0.1 --hostname pve-usv</code></pre>
+        <p>Alle Optionen sind optional; <code>--help</code> listet sie mit ihren
+        Standardwerten (als Einzeiler: <code>… | bash -s -- --help</code>).</p>
+        <table>
+          <thead><tr><th>Option</th><th>Standard</th><th>Bedeutung</th></tr></thead>
+          <tbody>
+            <tr><td><code>--ctid &lt;id&gt;</code></td><td><code>950</code></td>
+            <td>ID des neuen Containers</td></tr>
+            <tr><td><code>--hostname &lt;name&gt;</code></td><td><code>pve-usv</code></td>
+            <td>Hostname des Containers</td></tr>
+            <tr><td><code>--storage &lt;name&gt;</code></td><td>automatisch</td>
+            <td>Storage für die Container-Platte (Inhalt <code>rootdir</code>). Ohne Angabe:
+            <code>local-lvm</code>, dann <code>local-zfs</code>, dann der erste andere
+            Nicht-Ceph-Storage</td></tr>
+            <tr><td><code>--template-storage &lt;name&gt;</code></td><td><code>local</code></td>
+            <td>Storage, auf den das Debian-12-Template geladen wird (Inhalt
+            <code>vztmpl</code>). Der Standard weicht auf einen anderen geeigneten Storage
+            aus; ein ausdrücklich genannter wird abgelehnt, wenn er keine Templates
+            aufnehmen kann</td></tr>
+            <tr><td><code>--bridge &lt;bridge&gt;</code></td><td><code>vmbr0</code></td>
+            <td>Netzwerk-Bridge</td></tr>
+            <tr><td><code>--ip &lt;dhcp|adresse/cidr&gt;</code></td><td><code>dhcp</code></td>
+            <td><code>dhcp</code> oder eine feste Adresse wie <code>10.0.0.50/24</code></td></tr>
+            <tr><td><code>--gateway &lt;ip&gt;</code></td><td>–</td>
+            <td>Standard-Gateway, nur bei fester <code>--ip</code> verwendet</td></tr>
+            <tr><td><code>--memory &lt;MB&gt;</code></td><td><code>256</code></td>
+            <td>Arbeitsspeicher des Containers</td></tr>
+            <tr><td><code>--disk &lt;GB&gt;</code></td><td><code>4</code></td>
+            <td>Größe der Container-Platte</td></tr>
+            <tr><td><code>--allow-ceph-storage</code></td><td>aus</td>
+            <td>Ceph-gestützten <code>--storage</code> zulassen — siehe
+            <a href="#cluster-selfguest">der eigene Gast der Appliance</a></td></tr>
+          </tbody>
+        </table>
         <p>PVE-UPS ist außerdem auf <a href="https://community-scripts.org/"
         target="_blank" rel="noopener">community-scripts.org</a> gelistet (dort nach
         „PVE-UPS" suchen), einer community-gepflegten Sammlung von Proxmox-Helper-Skripten.
@@ -448,6 +481,8 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
           übernommen.</li>
           <li><b>RFC 1628 (Standard)</b>: die herstellerunabhängige UPS-MIB, sonst nichts.</li>
           <li><b>APC PowerNet</b>: die MIB der Netzwerkkarten von APC/Schneider.</li>
+          <li><b>CyberPower</b>: die CPS-MIB der CyberPower-Netzwerkkarten (RMCARD-Familie).
+          Sie wird <b>Wert für Wert</b> abgefragt — siehe unten.</li>
         </ul>
         <p>Besonders bei APC ist eine Hersteller-MIB nötig: Schneider unterstützt RFC 1628
         nur auf der <b>Network Management Card 2</b> (AP9630/AP9631/AP9635) ab Firmware
@@ -457,8 +492,17 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
         Quelle: Sie liefert die Restlaufzeit in Hundertstelsekunden statt in ganzen Minuten
         und meldet einen <b>Selbsttest</b> als eigenen Zustand — RFC 1628 kann einen
         Selbsttest nicht von einem echten Stromausfall unterscheiden.</p>
+        <p><b>CyberPower</b>-Karten beherrschen meist auch RFC 1628, aber nicht alle, und
+        manche Firmware beantwortet keine Anfrage nach mehreren Werten auf einmal — nicht mit
+        einem Fehler, die Anfrage läuft schlicht ins Timeout —, während jeder Wert einzeln
+        abgefragt antwortet. Deshalb wird die CyberPower-MIB immer Wert für Wert gelesen:
+        ein paar hundert Millisekunden je Abfrage im lokalen Netz, und eine Karte, die nicht
+        mehr antwortet, kostet weiterhin nur ein einziges Timeout.</p>
         <p>Eine MIB fest wählen nur, um sie zu erzwingen, etwa um ein Gerät zum Vergleich auf
-        den Standard festzunageln.</p>
+        den Standard festzunageln — oder wenn „USV testen" meldet, dass die reguläre Abfrage
+        keine Antwort bekam, die Werte einzeln aber antworten. Dann <b>CyberPower</b> wählen:
+        <b>Automatisch</b> beginnt immer mit einer Anfrage nach mehreren Werten, die eine
+        solche Karte nie beantwortet.</p>
 
         <h3>NUT-Server (USB- und serielle USVs)</h3>
         <p>Eine USV ohne Netzwerkkarte wird über
@@ -527,6 +571,11 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
           bricht eine Sammelabfrage ab, sobald ein Objekt fehlt — die reguläre Abfrage
           scheitert dann komplett, obwohl die übrigen Werte lesbar wären. Die USV nach
           Möglichkeit auf <b>v2c</b> umstellen.</li>
+          <li><b>Die reguläre Abfrage bekommt keine Antwort, jedes Objekt antwortet aber
+          einzeln</b> (SNMP): Die Karte verarbeitet keine Anfrage nach mehreren Werten auf
+          einmal — manche CyberPower-Firmware lässt sie schlicht ins Timeout laufen. Die
+          Zusammenfassung sagt das; die <b>MIB</b> auf <b>CyberPower</b> stellen, die Wert für
+          Wert gelesen wird.</li>
           <li><b>Alle RFC-1628-Objekte fehlen, alle Hersteller-Objekte antworten</b>: normal
           bei einer APC-Karte ohne RFC-1628-Unterstützung. Im Modus <b>Automatisch</b> werden
           beide MIBs aufgelistet, die tatsächlich genutzte steht oben, und die Zeile über der
@@ -618,8 +667,9 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
         <div class="callout warn">
           <span><b>Die Cluster-Vorbereitung setzt Proxmox VE 9.2 oder neuer voraus.</b>
           Alles in diesem und im nächsten Abschnitt hängt an <code>disarm-ha</code>, das mit
-          9.2 kam. Auf älteren Versionen setzt PVE-UPS nur die Ceph-Wartungsflags und sonst
-          nichts: HA wird nicht disarmt, und deshalb werden auch die Gäste nicht gestoppt.
+          9.2 kam. Auf älteren Versionen wird HA nicht disarmt, und wo HA Gäste verwaltet,
+          werden diese auch nicht clusterweit gestoppt; die Ceph-Wartungsflags werden
+          trotzdem gesetzt.
           PVE-UPS erkennt das an der API selbst, nie an einer Versionsnummer, sodass auch ein
           Backport funktioniert.</span>
         </div>
@@ -646,14 +696,15 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
         einbezogen, er wird von „Ganzen Cluster als Einheit herunterfahren" nie mitgenommen,
         und seine eigenen Schalter haben kein Mitspracherecht. Was der Haken <b>nicht</b>
         abw&auml;hlt, ist die Vorbereitung selbst — die wirkt naturgem&auml;&szlig; auf den
-        ganzen Cluster: HA wird clusterweit entwaffnet und mit Ceph wird jeder Gast im
-        Cluster gestoppt, auch die auf diesem Knoten. Bleibt der Haken auf einem Knoten aus,
+        ganzen Cluster: HA wird clusterweit entwaffnet und mit dem Gäste-Stopp oder Ceph
+        wird jeder Gast im Cluster gestoppt, auch die auf diesem Knoten. Bleibt der Haken auf einem Knoten aus,
         steht diese Maschine also ohne HA und ohne ihre G&auml;ste da. Der geplante
         Selbsttest benennt einen solchen Knoten, damit der Widerspruch vor einem Stromausfall
         auff&auml;llt und nicht w&auml;hrenddessen.</p>
-        <p>Alle drei Schalter in diesem Kasten wirken auf den <b>gesamten Cluster</b> —
-        Ceph-Wartungsflags, Armierungszustand des HA-Managers und ob der Cluster als Einheit
-        heruntergefahren wird — obwohl sie je Host-Karte eingestellt werden. Setzen Sie jeden
+        <p>Alle Schalter in diesem Kasten wirken auf den <b>gesamten Cluster</b> —
+        Ceph-Wartungsflags, Armierungszustand des HA-Managers, der Gäste-Stopp und ob der
+        Cluster als Einheit heruntergefahren wird — obwohl sie je Host-Karte eingestellt
+        werden. Setzen Sie jeden
         davon deshalb bei allen Knoten eines Clusters gleich. Wo sie sich widersprechen, geht
         PVE-UPS von „mindestens ein Knoten hat es verlangt" aus (einen verlangten Schritt
         auszulassen kann den Storage kosten, einen ungefragten auszuführen kostet ein
@@ -699,9 +750,40 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
         fehlgeschlagene Vorbereitung den ganzen Cluster laufen lässt, bis der Akku leer
         ist.</p>
 
+        <h4 id="cluster-gueststop">Alle Gäste zuerst stoppen, ohne Ceph (optional)</h4>
+        <p>Ohne weiteres Zutun stoppen bei einem einfachen Cluster die Knoten ihre Gäste
+        selbst, während sie ausschalten — in umgekehrter <code>startup</code>-Reihenfolge,
+        Gruppe für Gruppe, mit den Wartezeiten jeder Gruppe. Bei vielen Order-Gruppen kann
+        das länger dauern, als der Akku hält. <b>„Alle Gäste clusterweit zuerst stoppen"</b>
+        (standardmäßig aus) ersetzt das durch den Schritt aus der Ceph-Prozedur: Bevor der
+        erste Knoten herunterfährt, wird jede VM und jeder Container des Clusters außer
+        dieser Appliance zum Herunterfahren aufgefordert — alle gleichzeitig, parallel —, und
+        das Ergebnis wird durch erneutes Lesen der Gästeliste überprüft.</p>
+        <ul>
+          <li><b>Die Startreihenfolge wird ignoriert</b>, und zwar bewusst: Es geht darum,
+          fertig zu sein, bevor der Akku es ist. Eine Abhängigkeit zwischen einer Anwendung
+          und ihrer Datenbank wird nicht berücksichtigt.</li>
+          <li>Der Schritt hat sein eigenes Budget, <b>„Zeitlimit Gast-Shutdown"</b>, und Gäste,
+          die nach <b>„Gäste hart stoppen nach"</b> noch laufen, werden hart gestoppt — siehe
+          <a href="#cluster-guests">den Gäste-Shutdown</a> weiter unten; die Details gelten
+          unverändert.</li>
+          <li>Wo HA Gäste verwaltet, muss HA <b>vorher disarmt</b> werden (Proxmox VE 9.2+ und
+          der HA-Schalter), sonst startet der HA-Manager sie so schnell wieder, wie sie
+          stoppen. Geht das nicht, wird der Schritt mit einer Warnung übersprungen, und die
+          Knoten stoppen ihre Gäste wie bisher selbst.</li>
+          <li>Der eigene Gast dieser Appliance muss <b>ausgewählt</b> sein — siehe
+          <a href="#cluster-selfguest">der eigene Gast der Appliance</a>. Bis dahin wird gar
+          kein Gast gestoppt.</li>
+          <li>Benötigt <code>VM.Audit</code> und <code>VM.PowerMgmt</code> (Tabelle
+          unten).</li>
+        </ul>
+        <p>Mit der Ceph-Option gehört der Gäste-Stopp immer zum Ablauf — die Host-Karte zeigt
+        ihn dann angehakt und gesperrt, und wird Ceph wieder abgewählt, steht der Kasten wieder
+        so wie vorher.</p>
+
         <h4 id="cluster-unit">Der Cluster fährt als Einheit herunter</h4>
         <p>Die Vorbereitung wirkt naturgemäß clusterweit — sie disarmt HA für den gesamten
-        Cluster und stoppt mit der Ceph-Option jeden Gast darin. Der Shutdown selbst ist
+        Cluster und stoppt mit dem Gäste-Stopp (oder der Ceph-Option) jeden Gast darin. Der Shutdown selbst ist
         dagegen hostweise: Ein Knoten ist fällig, wenn <i>seine</i> USVs das sagen. Beides muss
         nicht übereinstimmen, und wenn es das nicht tut, bleibt ein halbierter Cluster
         zurück.</p>
@@ -712,7 +794,9 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
         Eventlog nennt zu jedem, warum er mitgenommen wurde.</p>
         <p>Schalten Sie es nur bei einem einfachen Cluster aus, bei dem HA die Gäste eines
         einzelnen ausfallenden Knotens lieber auf die übrigen verschieben soll; dort ist ein
-        Teil-Shutdown ein gutes Ergebnis. Bei Ceph sollte es an bleiben — was ein halb
+        Teil-Shutdown ein gutes Ergebnis. Mit dem Gäste-Stopp sollte es an bleiben, sonst
+        haben die weiterlaufenden Knoten ihre Gäste umsonst verloren; bei Ceph muss es an
+        bleiben — was ein halb
         heruntergefahrener hyperkonvergenter Cluster bedeutet, steht
         <a href="#cluster-ceph">im nächsten Abschnitt</a>.</p>
         <div class="callout warn">
@@ -750,6 +834,7 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
             <tr><td>nichts (reiner Shutdown)</td><td><code>Sys.PowerMgmt</code></td><td><code>/nodes</code></td></tr>
             <tr><td>Cluster-Mitglied</td><td><code>Sys.Audit</code></td><td><code>/</code></td></tr>
             <tr><td>+ HA-Manager disarmen</td><td><code>Sys.Console</code></td><td><code>/</code></td></tr>
+            <tr><td>+ Alle Gäste clusterweit zuerst stoppen</td><td><code>VM.Audit</code>, <code>VM.PowerMgmt</code></td><td><code>/</code> (zählt auch auf <code>/vms</code>)</td></tr>
           </tbody>
         </table>
         <p>Die zu Ihren Haken passende Zeile <b>einmal je Datacenter</b> in der Shell eines
@@ -760,7 +845,10 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
 pveum role add UpsCluster -privs "Sys.Audit"
 
 # ... zusätzlich HA-Disarm (gewährt Shell-Zugriff, siehe Warnung unten):
-pveum role add UpsCluster -privs "Sys.Audit Sys.Console"</code></pre>
+pveum role add UpsCluster -privs "Sys.Audit Sys.Console"
+
+# ... zusätzlich der clusterweite Gäste-Stopp:
+pveum role add UpsCluster -privs "Sys.Audit Sys.Console VM.Audit VM.PowerMgmt"</code></pre>
         <p>Anschließend die Rolle zuweisen — <b>beide</b> Zeilen, siehe den Hinweis zur
         Privilege Separation weiter unten:</p>
 <pre><code>pveum acl modify / -user ups@pve -role UpsCluster
@@ -779,7 +867,10 @@ pveum acl modify / -token 'ups@pve!shutdown' -role UpsCluster</code></pre>
         disarm)"), sodass die Entscheidung über die Vergabe ohne diese Seite fällt. Darunter
         listet ein <b>Detail-Ausklapper</b> jede Abfrage mit ihrem Ergebnis auf (er öffnet
         sich von selbst, wenn etwas nicht stimmt), sodass sichtbar wird, was die einzelnen
-        Endpunkte tatsächlich geantwortet haben — statt nur der Zusammenfassungszeile.</p>
+        Endpunkte tatsächlich geantwortet haben — statt nur der Zusammenfassungszeile. Eine
+        Abfrage, die nur eine nicht angehakte Option braucht — etwa die Gästeliste ohne
+        Gäste-Stopp —, erscheint als <i>„nicht lesbar (nicht benötigt)"</i> und lässt den
+        Ausklapper geschlossen.</p>
         <div class="callout warn">
           <span><b><code>Sys.Console</code> gewährt faktisch Shell-Zugriff auf die
           Knoten.</b> Deshalb ist der HA-Disarm ein eigener Schalter: Wer ihn nicht vergeben
@@ -816,11 +907,12 @@ pveum acl modify / -token 'ups@pve!shutdown' -role UpsCluster</code></pre>
         eines laufenden Shutdowns ist die Schaltfläche ausgeblendet, und die API lehnt die
         Anfrage ab: HA dort wieder zu armieren würde die Vorbereitung genau in dem Moment
         rückgängig machen, in dem sie ihre Aufgabe erfüllt.</p>
-        <p class="muted">Bei einem einfachen Cluster fasst PVE-USV einzelne Gäste nie an: Beim
+        <p class="muted">Bei einem einfachen Cluster fasst PVE-UPS einzelne Gäste nie an: Beim
         Poweroff werden sie ohnehin in ihrer konfigurierten Reihenfolge gestoppt — vom LRM,
         solange HA armiert ist, und von <code>pve-guests</code>, sobald er disarmt ist — und
         das Problem, das der HA-Disarm löst, ist ausschließlich das <i>Verschieben auf andere
-        Knoten</i> danach. Nur die Ceph-Option ändert das.</p>
+        Knoten</i> danach. Nur der Gäste-Stopp ändert das — für sich angehakt oder als Teil
+        der Ceph-Option.</p>
 
         <h3 id="cluster-ceph">Hyperkonvergente Cluster (Ceph) <span class="pill warn">Beta</span></h3>
         <div class="callout warn">
@@ -850,10 +942,12 @@ pveum acl modify / -token 'ups@pve!shutdown' -role UpsCluster</code></pre>
         Viele Cluster laufen auf ZFS-Replikation oder gemeinsamem NFS/iSCSI, und dies ist der
         einzige Teil, der in eine Storage-Ebene schreibt. Auf einem Cluster ohne Ceph wird sie
         übersprungen, statt versucht und als Fehler gemeldet zu werden, und die zugehörigen
-        Rechte werden nicht gebraucht. Das Stoppen der Gäste hat <i>keinen eigenen
-        Schalter</i> — bei Ceph ist es keine Option, sondern der erste Schritt der offiziellen
+        Rechte werden nicht gebraucht. Schritt 2 gibt es auch für sich, für Cluster ohne Ceph
+        (<a href="#cluster-gueststop">siehe oben</a>), mit Ceph lässt er sich aber nicht
+        abschalten: Dort ist er keine Option, sondern der erste Schritt der offiziellen
         Prozedur, und ein Haken, dessen Fehlen den Cluster beim Stromausfall hängen lässt,
-        wäre eine Falle.</p>
+        wäre eine Falle. Die Host-Karte zeigt ihn angehakt und gesperrt, solange Ceph an
+        ist.</p>
         <p>Die Flags werden <b>überprüft, nicht angenommen</b>: Die Sammel-Aktualisierung
         läuft asynchron (sie liefert nur eine Worker-Kennung), deshalb werden sie
         zurückgelesen — notfalls einzeln gesetzt.</p>
@@ -962,8 +1056,9 @@ pveum role add UpsCluster -privs "Sys.Audit Sys.Modify VM.Audit VM.PowerMgmt"
 # Alles, inklusive der optionalen Storage-Prüfung:
 pveum role add UpsCluster -privs "Sys.Audit Sys.Console Sys.Modify VM.Audit VM.PowerMgmt Datastore.Audit"</code></pre>
         <p>Die Rolle wird mit denselben beiden <code>acl modify</code>-Befehlen wie oben
-        zugewiesen. Bei einem Cluster ohne Ceph werden nie <code>Sys.Modify</code>,
-        <code>VM.Audit</code> oder <code>VM.PowerMgmt</code> eingefordert.
+        zugewiesen. Bei einem Cluster ohne Ceph wird nie <code>Sys.Modify</code> eingefordert,
+        <code>VM.Audit</code> und <code>VM.PowerMgmt</code> nur mit angehaktem
+        Gäste-Stopp.
         <code>Datastore.Audit</code> ist die Ausnahme, die die Regel bestätigt: Es erkauft nur
         die Prüfung, ob diese Appliance auf Ceph liegt, und sein Fehlen wird deshalb leise
         erwähnt und nie als fehlendes Recht gemeldet.</p>
@@ -1138,6 +1233,45 @@ curl -s http://&lt;container-ip&gt;:8080/api/status \
           <b>englisch</b> — unabhängig von der gewählten Oberflächensprache. Das hält
           Auswertung und Monitoring über Installationen hinweg konsistent.</span>
         </div>
+
+        <h3 id="history">Verlauf</h3>
+        <p>Der Reiter <b>Verlauf</b> zwischen Dashboard und Einstellungen zeigt jede USV im
+        Zeitverlauf: Restlaufzeit, Last und Ladung, mit dem Stromzustand als farbigem
+        Hintergrund — Akkubetrieb, Shutdown ausgelöst, nicht erreichbar, Bypass. Ereignisse
+        aus dem Ereignisprotokoll erscheinen als Markierungen: Warnungen und kritische
+        Ereignisse immer, informative (etwa der Selbsttest) auf Wunsch. Mit der Maus über dem
+        Diagramm stehen die Werte zu diesem Zeitpunkt und die Ereignisse an der Markierung
+        daneben.</p>
+        <ul>
+          <li><b>Zeiträume</b> von 1 Stunde bis 90 Tage sowie „Alles" — oder ein beliebiger
+          Beginn und ein beliebiges Ende in <b>Von</b> und <b>Bis</b>; diese beiden Felder
+          zeigen immer den gerade angezeigten Zeitraum. Zum Hineinzoomen über das Diagramm
+          ziehen, Doppelklick führt zum gewählten Zeitraum zurück; ein fester Zeitraum wird
+          nicht unter Ihnen aktualisiert.</li>
+          <li><b>Eine USV</b>: oben die Restlaufzeit in Minuten, darunter Last und Ladung in
+          Prozent — zwei Felder auf einer Zeitachse statt eines Diagramms mit zwei Skalen. Die
+          gestrichelte Linie ist der Auslöser „Restlaufzeit unter", den diese USV tatsächlich
+          verwendet; so ist zu sehen, wie knapp ein Ausfall daran vorbeiging.</li>
+          <li><b>Alle</b> (bei mehr als einer USV): eine Messgröße für jede USV in einem
+          Diagramm, darunter je USV ein Statusstreifen.</li>
+          <li>Die <b>Ausfall-Tabelle</b> listet jeden Abschnitt im Akkubetrieb im Zeitraum —
+          Beginn, Dauer, niedrigste Restlaufzeit und Ladung, höchste Last, ob ein Shutdown
+          ausgelöst wurde. Ein Klick auf eine Zeile zoomt das Diagramm auf diesen Ausfall.</li>
+          <li><b>CSV</b> lädt die Rohwerte des angezeigten Zeitraums herunter.</li>
+        </ul>
+        <p>Aufgezeichnet wird ein Wert je USV und Minute im Netzbetrieb, einer je Abfrage im
+        Akkubetrieb und einer bei jedem Zustandswechsel — etwa 1.440 Zeilen je USV und Tag,
+        ein paar MB je USV über 90 Tage. Er liegt in <code>history.db</code> neben dem
+        Ereignisprotokoll (unter Docker im selben Volume), ist <b>nicht</b> Teil der
+        Konfigurationssicherung, und „Log leeren" lässt ihn stehen. Geschrieben wird im
+        Hintergrund: Eine langsame oder volle Platte kostet den Verlauf, nie den
+        Shutdown.</p>
+        <p>Unter <i>Einstellungen → System</i> lässt sich die Aufzeichnung abschalten, die
+        Aufbewahrung in Tagen festlegen (1–365, Vorgabe 90) und der Verlauf löschen. Aus
+        beendet die Aufzeichnung und blendet den Reiter aus; Aufgezeichnetes bleibt, bis es
+        abläuft. <b>Eine Neuinstallation zeichnet von Anfang an auf; nach einem Update von
+        einer früheren Version bleibt es aus</b>, bis Sie es einschalten — ein Update
+        schreibt also nie ungefragt auf eine Platte, die niemand dafür bemessen hat.</p>
 
         <h3 id="webhook">Webhook-Benachrichtigungen</h3>
         <p>Optional wird jedes wichtige Ereignis per HTTP-POST an eine URL Ihrer Wahl
@@ -1353,7 +1487,7 @@ curl -s http://&lt;container-ip&gt;:8080/api/status \
       - TZ=Europe/Berlin
     volumes:
       - pve-ups-config:/etc/pve-usv    # config.yaml (Secrets, 0600)
-      - pve-ups-data:/var/lib/pve-usv  # events.db + Engine-Zustand
+      - pve-ups-data:/var/lib/pve-usv  # events.db, history.db + Engine-Zustand
 volumes:
   pve-ups-config:
   pve-ups-data:</code></pre>
@@ -1433,6 +1567,13 @@ systemctl start pve-usv-agent.service</code></pre>
         <code>sumx</code>/<code>sy</code> v5.1.7 unterstützt, während die älteren
         NMC1-Karten (AP9617/AP9618/AP9619) sie gar nicht implementieren. „USV testen" zeigt,
         welche MIB genutzt wurde und welche Objekte jede von beiden beantwortet hat.</p>
+        <h3>Eine CyberPower-USV meldet „keine Antwort", obwohl die Karte erreichbar ist</h3>
+        <p>„USV testen" ausführen. Steht in der Zusammenfassung, dass die reguläre Abfrage
+        keine Antwort bekam, die Werte einzeln aber antworten, kann die Karte keine Anfrage
+        nach mehreren Werten auf einmal verarbeiten: die <b>MIB</b> auf <b>CyberPower</b>
+        stellen, die Wert für Wert gelesen wird. Antwortet die Karte gar nicht, Community bzw.
+        Zugangsdaten prüfen und ob SNMP auf der Karte für die IP der Appliance freigegeben
+        ist.</p>
         <h3>NUT: „kennt keine USV mit diesem Namen" oder gar keine Antwort</h3>
         <p>Der USV-Name muss dem Abschnittsnamen in der <code>ups.conf</code> von upsd
         entsprechen; <code>upsc -l &lt;host&gt;</code> listet die gültigen Namen. Antwortet
@@ -1461,6 +1602,23 @@ systemctl start pve-usv-agent.service</code></pre>
         <p class="muted">Vereinfachte, nutzersichtbare Highlights. Der vollständige technische
         Verlauf steht im <a href="https://github.com/ffind-dev/pve-ups/blob/main/CHANGELOG.md"
         target="_blank" rel="noopener">Changelog des GitHub-Repositories</a>.</p>
+
+        <div class="cl-ver">4.3.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Reiter „Verlauf"</b>: Restlaufzeit, Last und Ladung jeder USV im
+          Zeitverlauf, mit Ausfällen, Auslösern und Markierungen aus dem Ereignisprotokoll,
+          Zoom, frei wählbarem Zeitraum, Ausfall-Tabelle und CSV-Export. Nach einem Update
+          bleibt er aus, bis Sie ihn unter <i>Einstellungen → System</i> einschalten — siehe
+          <a href="#history">Verlauf</a>.</li>
+          <li><b>„Alle Gäste clusterweit zuerst stoppen" ohne Ceph</b>: Vor dem ersten Knoten
+          werden alle Gäste gleichzeitig zum Herunterfahren aufgefordert, statt Knoten für
+          Knoten in Startreihenfolge — für Cluster, bei denen das länger dauert, als der Akku
+          hält. Siehe <a href="#cluster-gueststop">den Gäste-Stopp</a>.</li>
+          <li><b>CyberPower-Netzwerkkarten</b> werden über ihre eigene MIB gelesen, auch
+          Karten ohne RFC 1628. „Automatisch" scheitert über SNMP v2c nicht mehr an Karten,
+          die ein fehlendes Objekt mit einem Fehler beantworten.</li>
+          <li><b>Das Docker-Image läuft auf einem Raspberry Pi</b> (64- und 32-Bit).</li>
+        </ul>
 
         <div class="cl-ver">4.2.0 <span class="date">2026</span></div>
         <ul>

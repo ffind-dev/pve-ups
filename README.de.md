@@ -6,7 +6,7 @@ Konfigurationsdateien.**
 *English version: [README.md](README.md)*
 
 PVE-UPS überwacht eine oder mehrere USVs — **mit SNMP-Netzwerkkarte (Standard RFC 1628
-oder Hersteller-MIB wie APC PowerNet)** oder **über einen NUT-Server**, worüber USB- und
+oder Hersteller-MIB: APC PowerNet, CyberPower)** oder **über einen NUT-Server**, worüber USB- und
 seriell angeschlossene USVs gelesen werden — und fährt bei Stromausfall einen oder mehrere
 **Proxmox-VE-Hosts** (auf Wunsch auch einen **Proxmox Backup Server**) geordnet herunter.
 Der moderne Ersatz für herstellergebundene Appliances wie APC PowerChute Network Shutdown.
@@ -38,7 +38,8 @@ NUT als *Treiber*, statt es zu ersetzen:
   Nirgendwo Root-SSH.
 - **Herstellerneutral, aber nicht blauäugig** — die Standard-RFC-1628-UPS-MIB per
   SNMP v1/v2c/v3 (reine Python-Implementierung, kein net-snmp), mit automatischem Wechsel
-  auf eine Hersteller-MIB, wo der Standard nicht reicht (APC PowerNet) — oder jeder
+  auf eine Hersteller-MIB, wo der Standard nicht reicht (APC PowerNet, CyberPower) — oder
+  jeder
   vorhandene NUT-Server als nur-lesender Client.
 - **NUT bleibt Treiber, nie das Gehirn** — PVE-UPS liest von `upsd` ausschließlich
   Variablen. Kein `upsmon`, kein `upssched`, keine Shutdown-Skripte: Schwellen,
@@ -102,6 +103,22 @@ curl -fsSL https://github.com/ffind-dev/pve-ups/releases/latest/download/install
   --ctid 950 --ip 10.0.0.50/24 --gateway 10.0.0.1 --hostname pve-usv
 ```
 
+Alle Optionen sind optional; `--help` listet sie mit ihren Standardwerten
+(`curl … | bash -s -- --help`):
+
+| Option | Standard | Bedeutung |
+|---|---|---|
+| `--ctid <id>` | `950` | ID des neuen Containers |
+| `--hostname <name>` | `pve-usv` | Hostname des Containers |
+| `--storage <name>` | automatisch | Storage für die Container-Platte (Inhalt `rootdir`). Ohne Angabe: `local-lvm`, dann `local-zfs`, dann der erste andere Nicht-Ceph-Storage |
+| `--template-storage <name>` | `local` | Storage, auf den das Debian-12-Template geladen wird (Inhalt `vztmpl`). Der Standard weicht auf einen anderen geeigneten Storage aus; ein ausdrücklich genannter wird abgelehnt, wenn er keine Templates aufnehmen kann |
+| `--bridge <bridge>` | `vmbr0` | Netzwerk-Bridge |
+| `--ip <dhcp\|adresse/cidr>` | `dhcp` | `dhcp` oder eine feste Adresse wie `10.0.0.50/24` |
+| `--gateway <ip>` | – | Standard-Gateway, nur bei fester `--ip` verwendet |
+| `--memory <MB>` | `256` | Arbeitsspeicher des Containers |
+| `--disk <GB>` | `4` | Größe der Container-Platte |
+| `--allow-ceph-storage` | aus | Ceph-gestützten `--storage` zulassen (siehe unten) |
+
 Auf einem **Ceph-Cluster** lehnt der Installer einen Ceph-gestützten rootfs-Storage ab
 (und überspringt ihn bei der automatischen Auswahl): Dieser Container muss weiterlaufen,
 während der Cluster verschwindet, den er herunterfährt — auf Ceph kann er das nicht, denn
@@ -120,9 +137,10 @@ Danach das Webinterface auf **`http://<container-ip>:8080`** öffnen:
 
 > Der LXC läuft typischerweise auf einem der zu schützenden Hosts. Diesen in der
 > Host-Liste als **„Dieser Host"** markieren — er wird dann garantiert zuletzt
-> heruntergefahren. Auf einem Ceph-Cluster stattdessen diesen Container unter
-> *Auslöser → Diese Appliance* auswählen: Die Markierung folgt dann dieser Auswahl, und
-> das clusterweite Herunterfahren der Gäste weiß, welchen Gast es nie stoppen darf.
+> heruntergefahren. Mit dem clusterweiten Gäste-Stopp (oder auf einem Ceph-Cluster)
+> stattdessen diesen Container unter *Auslöser → Diese Appliance* auswählen: Die
+> Markierung folgt dann dieser Auswahl, und der Gäste-Stopp weiß, welchen Gast er nie
+> stoppen darf.
 
 ## Docker (alternative Bereitstellung)
 
@@ -139,7 +157,7 @@ docker compose up -d
 ```
 
 Das bindet zwei benannte Volumes ein (`/etc/pve-usv` für die Konfiguration,
-`/var/lib/pve-usv` für Eventlog/Zustand), damit die Daten eine Neuerstellung des
+`/var/lib/pve-usv` für Eventlog, Verlauf und Zustand), damit die Daten eine Neuerstellung des
 Containers überstehen. Danach `http://<container-host>:8080` öffnen und wie gewohnt
 den Wizard durchlaufen.
 
@@ -272,8 +290,10 @@ unterscheiden sich von Proxmox VE und erklären die Befehle oben:
   - **SNMP v1/v2c und v3** (authPriv), nur lesend. Liest die Standard-RFC-1628-UPS-MIB
     oder eine **Hersteller-MIB** — derzeit **APC PowerNet**, womit APC-Karten
     funktionieren, die RFC 1628 nur teilweise (NMC2 unter Firmware sumx/sy v5.1.7) oder gar
-    nicht (NMC1: AP9617/AP9618/AP9619) implementieren. Wird je USV automatisch erkannt und
-    lässt sich von Hand festlegen.
+    nicht (NMC1: AP9617/AP9618/AP9619) implementieren, und **CyberPower** (CPS-MIB,
+    RMCARD-Familie), Wert für Wert gelesen für Karten, die keine Anfrage nach mehreren Werten
+    auf einmal beantworten. Wird je USV automatisch erkannt und lässt sich von Hand
+    festlegen.
   - **NUT-Server** (TCP 3493) als nur-lesender Client — für USVs ohne Netzwerkkarte.
     Funktioniert mit dem eingebauten USV-Server einer Synology/QNAP/TrueNAS, einem
     Raspberry Pi, OPNsense oder einem NUT auf einem Proxmox-Host. QNAP und Synology geben
@@ -288,6 +308,12 @@ unterscheiden sich von Proxmox VE und erklären die Befehle oben:
 - **Zweisprachige Oberfläche**: Englisch (Standard) und Deutsch, automatisch passend
   zur Browsersprache; eingebautes Benutzerhandbuch (beide Sprachen).
 - **Schwellen-Overrides je USV** zusätzlich zu den globalen Standardwerten.
+- **Reiter „Verlauf“**: Restlaufzeit, Last und Ladung jeder USV im Zeitverlauf (1 Stunde
+  bis 90 Tage oder frei gewählter Beginn und frei gewähltes Ende), mit Ausfällen, Auslösern und Nicht-Erreichbarkeit als farbigen Bändern,
+  Markierungen aus dem Ereignisprotokoll, Zoom per Ziehen, Ausfall-Tabelle und CSV-Export.
+  Wird eine einstellbare Anzahl Tage in einer eigenen kleinen Datenbank aufbewahrt und im
+  Hintergrund geschrieben, berührt also nie den Shutdown-Pfad; abschaltbar. Bei
+  Neuinstallationen an, nach einem Update aus, bis es eingeschaltet wird.
 - **Cluster-Vorbereitung für Proxmox VE** (**Beta**, setzt Proxmox VE **9.2+** voraus):
   einmal je Cluster, bevor dessen erster Knoten heruntergefahren wird, wird der HA-Manager
   disarmt, damit keine Dienste auf Knoten verschoben werden, die selbst gerade
@@ -296,7 +322,11 @@ unterscheiden sich von Proxmox VE und erklären die Befehle oben:
   Vorbereitung clusterweit wirkt, der Shutdown aber hostweise, fährt
   **„Gesamten Cluster als Einheit herunterfahren"** (standardmäßig an) alle Knoten des
   Clusters herunter, sobald einer davon fällig ist — sonst bleibt bei einer einzelnen
-  ausfallenden USV ein halbierter Cluster zurück. Als Beta gekennzeichnet, solange
+  ausfallenden USV ein halbierter Cluster zurück. Auf Wunsch werden vor dem ersten Knoten
+  **alle Gäste des Clusters gleichzeitig zum Herunterfahren aufgefordert** („Alle Gäste
+  clusterweit zuerst stoppen", standardmäßig aus): schneller, als wenn jeder Knoten seine
+  Gäste in umgekehrter Startreihenfolge abarbeitet, wenn der Akku knapp ist — um den Preis,
+  dass diese Reihenfolge ignoriert wird. Als Beta gekennzeichnet, solange
   Praxiserfahrung gesammelt wird; durchgehend opt-in, Rückmeldungen gern über
   [Issues](https://github.com/ffind-dev/pve-ups/issues).
 - **Hyperkonvergente Cluster (Ceph)** (**Beta**): Mit eingeschalteter Ceph-Option folgt
@@ -418,6 +448,9 @@ PVE_USV_CONFIG=./dev-config.yaml PVE_USV_DB=./dev-events.db python -m app.main
 #         Die APC-Snapshots enthalten nur PowerNet-OIDs, also eine Karte ohne RFC 1628:
 #                                    Community "apc"         -> Netzbetrieb, MIB wird APC
 #                                    Community "apc-battery" -> Stromausfall auf der APC-MIB
+#         Ebenso für CyberPower (nur CPS-MIB, Wert für Wert abgefragt):
+#                                    Community "cyberpower"         -> Netzbetrieb, MIB wird CyberPower
+#                                    Community "cyberpower-battery" -> Stromausfall auf der CyberPower-MIB
 #   NUT:  Host 127.0.0.1, Port 3493, USV-Name "ups"
 ```
 
@@ -437,8 +470,8 @@ PVE_USV_CONFIG=./dev-config.yaml PVE_USV_DB=./dev-events.db python -m app.main
 - Shutdown-Ziele sind **Proxmox VE und Proxmox Backup Server**. Proxmox Mail Gateway und
   Datacenter Manager sind nicht umgesetzt: beide sprechen ihr eigenes Token-Schema, und
   ungetesteter Support wäre schlechter als keiner.
-- Liest die Standard-RFC-1628-UPS-MIB, die APC-PowerNet-MIB oder die Variablen eines
-  NUT-Servers. Weitere Hersteller-MIBs sind noch nicht umgesetzt — ein Gerät außerhalb
+- Liest die Standard-RFC-1628-UPS-MIB, die MIBs von APC PowerNet und CyberPower oder die
+  Variablen eines NUT-Servers. Weitere Hersteller-MIBs sind noch nicht umgesetzt — ein Gerät außerhalb
   davon braucht entweder RFC 1628 oder einen NUT-Treiber. Die Appliance selbst spricht kein
   USB/seriell; eine lokal angeschlossene USV wird über einen NUT-Server erreicht.
 - Das NUT-Protokoll ist unverschlüsselt. Es gehört in ein vertrauenswürdiges Netz — oder

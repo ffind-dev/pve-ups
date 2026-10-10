@@ -51,12 +51,13 @@ from .config import (
     assign_ups_ids,
     assign_webhook_ids,
     load_config,
+    migrate_history_default,
     save_config,
 )
 from .engine import Engine, _hostname
 # ``cluster`` and ``proxmox`` are PVE-specific on purpose: both back wizard checks
 # that only exist for a Proxmox VE node. Shutdowns still go through ``targets``.
-from . import cluster, notify, proxmox, sources, targets
+from . import cluster, history, notify, proxmox, sources, targets
 
 log = logging.getLogger("pve-usv")
 
@@ -544,6 +545,10 @@ def _merge_config(incoming: dict, existing: AppConfig) -> AppConfig:
             continue
         _reconcile_webhook_secrets(hook, existing_hooks.get(hook.get("id")))
 
+    # A form that does not know the history section (a cached app.js from before it
+    # existed) keeps what is stored, instead of switching it to the default.
+    data.setdefault("history", existing.history.model_dump())
+
     # Never overwrite auth/session material from the config form.
     data["ui_password_hash"] = existing.ui_password_hash
     data["session_secret"] = existing.session_secret
@@ -627,7 +632,9 @@ async def api_config_import(incoming: dict):
     data["ui_password_hash"] = engine.cfg.ui_password_hash
     data["session_secret"] = engine.cfg.session_secret
     try:
-        new_cfg = AppConfig.model_validate(data)
+        # A backup from before the history existed is an older installation coming back:
+        # it gets the history off, exactly like an update (see migrate_history_default).
+        new_cfg = AppConfig.model_validate(migrate_history_default(data))
     except Exception as exc:  # noqa: BLE001 - validation error -> 400
         raise HTTPException(status_code=400, detail=f"Invalid import file: {exc}")
     assign_ups_ids(new_cfg.ups)  # backups from <2.0 migrate to a single UPS; ensure ids
@@ -673,6 +680,10 @@ async def api_test_ups(incoming: dict):
         raise HTTPException(status_code=400, detail=f"Invalid UPS settings: {exc}")
     state = await sources.poll(cfg)
     diag = await sources.probe(cfg)
+    # Only the two together show an agent that chokes on multi-object requests (#40).
+    hint = sources.poll_hint(cfg, state, diag)
+    if hint:
+        diag.summary = f"{diag.summary} {hint}".strip()
     return {
         "reachable": state.reachable,
         "power_source": state.power_source,
@@ -789,12 +800,18 @@ async def _check_host_cluster(
         host, timeout=8.0, self_vmid=ap.self_vmid, self_node=ap.self_node,
         hostname=_hostname(),
     )
-    # The guest privileges follow the Ceph tick, because that is the switch the
-    # cluster-wide guest stop hangs on — it has none of its own.
+    # The guest privileges follow the guest stop: its own tick, or the Ceph tick, which
+    # includes it where there is Ceph — the same reading as Engine._guest_plan().
+    guest_stop = (
+        (host.cluster_ceph and not info.ceph_unavailable) or host.cluster_guest_stop
+    )
     missing = cluster.missing_privileges(
         info, want_ceph=host.cluster_ceph, want_disarm=host.cluster_ha_disarm,
-        want_guests=host.cluster_ceph,
+        want_guests=guest_stop,
     )
+    # Same options, same verdict in the diagnostics panel: a read only an unticked option
+    # needs must not unfold it in orange (#39).
+    cluster.mark_unneeded(info, want_ceph=host.cluster_ceph, want_guests=guest_stop)
     # /cluster/status names every member and marks the one that answered, so a cluster
     # member never needs the extra /nodes round trip.
     known = proxmox.NodeList(
@@ -884,10 +901,9 @@ async def _check_host_cluster(
             f"the step is skipped before every shutdown. Untick it; {cluster.PRIV_MODIFY} "
             "is then not needed on '/' either."
         )
-    elif host.cluster_ceph:
-        # The Ceph tick also switches on the cluster-wide guest stop, so this is where
-        # the operator finds out what that will actually do — while it can still be
-        # changed, rather than during the outage.
+    if guest_stop:
+        # This is where the operator finds out what the cluster-wide guest stop will
+        # actually do — while it can still be changed, rather than during the outage.
         parts.extend(_guest_stop_notes(host, info))
     # Reported regardless of whether HA manages any guest: a disarmed stack means no
     # fencing cluster-wide, and it stays that way until someone arms it again.
@@ -931,6 +947,16 @@ def _guest_stop_notes(host: PveHostConfig, info: cluster.ClusterInfo) -> list[st
             "privilege instead of refusing, so an empty answer is never read as "
             "'no guests'."
         ]
+    # The same precondition the preparation applies: with HA holding guests and no way to
+    # disarm it, the HA manager would restart them as fast as they are stopped.
+    if info.ha_resources and (not host.cluster_ha_disarm or info.disarm_unavailable):
+        return [
+            "HA manages guests on this cluster and cannot be disarmed "
+            + ("(the HA disarm option is off)" if not host.cluster_ha_disarm
+               else "(disarm-ha needs Proxmox VE 9.2 or newer)")
+            + ", so the guests are NOT stopped cluster-wide before the shutdown — the HA "
+            "manager would restart them as fast as they are stopped."
+        ]
     ap = engine.cfg.appliance if engine is not None else ApplianceConfig()
     guest = info.self_guest
     notes = []
@@ -958,7 +984,7 @@ def _guest_stop_notes(host: PveHostConfig, info: cluster.ClusterInfo) -> list[st
             f"storage: once the OSDs drop below min_size its own IO blocks and it can no "
             f"longer shut anything down."
         )
-    elif info.self_guest_on_ceph is None and guest is not None:
+    elif info.self_guest_on_ceph is None and guest is not None and info.ceph_configured:
         notes.append(
             f"Whether {guest.label} sits on Ceph storage could not be checked "
             f"({cluster.PRIV_DS_AUDIT} missing) — everything else works."
@@ -1178,6 +1204,100 @@ async def api_events(limit: int = Query(100, ge=1, le=1000)):
 async def api_events_clear():
     removed = db.clear_events()
     db.log_event("Event log cleared", f"{removed} entries removed.", db.INFO)
+    return {"ok": True, "removed": removed}
+
+
+# --- history (#37) -----------------------------------------------------------
+# Plain ``def`` handlers on purpose: FastAPI runs them in its thread pool, so the SQLite
+# reads (up to a quarter of a year of samples) never run on the event loop the engine
+# polls on.
+def _history_ups() -> list[tuple[str, str]]:
+    assert engine is not None
+    return [(u.id, u.label) for u in engine.cfg.ups]
+
+
+@app.get("/api/history", dependencies=[Depends(require_auth)])
+def api_history(
+    range_key: str = Query("24h", alias="range"),
+    start: Optional[int] = Query(None, alias="from"),
+    end: Optional[int] = Query(None, alias="to"),
+):
+    assert engine is not None
+    cfg = engine.cfg
+    if not cfg.history.enabled:
+        return {"enabled": False}
+    meta = history.info()
+    s, e = history.resolve_range(
+        range_key, start, end, cfg.history.retention_days, oldest=meta["oldest"]
+    )
+    out = history.query(_history_ups(), s, e)
+    # The runtime trigger each UPS actually uses, so the chart can draw how close an
+    # outage came to it.
+    by_id = {u.id: u for u in cfg.ups}
+    for entry in out["ups"]:
+        u = by_id.get(entry["id"])
+        entry["threshold_runtime_min"] = (
+            cfg.effective_thresholds(u).runtime_below_minutes if u is not None else None
+        )
+    try:
+        events = db.events_between(
+            datetime.fromtimestamp(s, timezone.utc),
+            datetime.fromtimestamp(e, timezone.utc),
+            limit=history.MAX_EVENTS,
+        )
+    except Exception as exc:  # noqa: BLE001 - markers are a nice-to-have
+        log.warning("Reading events for the history failed: %s", exc)
+        events = []
+    out["events"] = [
+        {
+            "ts": int(datetime.fromisoformat(ev["ts"]).timestamp()),
+            "severity": ev["severity"],
+            "event": ev["event"],
+            "detail": ev["detail"],
+        }
+        for ev in events
+    ]
+    out.update(
+        enabled=True, retention_days=cfg.history.retention_days, oldest=meta["oldest"]
+    )
+    return out
+
+
+@app.get("/api/history.csv", dependencies=[Depends(require_auth)])
+def api_history_csv(
+    range_key: str = Query("24h", alias="range"),
+    start: Optional[int] = Query(None, alias="from"),
+    end: Optional[int] = Query(None, alias="to"),
+):
+    assert engine is not None
+    cfg = engine.cfg
+    if not cfg.history.enabled:
+        raise HTTPException(status_code=404, detail="History is switched off")
+    s, e = history.resolve_range(
+        range_key, start, end, cfg.history.retention_days, oldest=history.info()["oldest"]
+    )
+    body = history.csv_export(_history_ups(), s, e)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="pve-ups-history-{stamp}.csv"'},
+    )
+
+
+@app.get("/api/history/info", dependencies=[Depends(require_auth)])
+def api_history_info():
+    try:
+        return history.info()
+    except Exception as exc:  # noqa: BLE001 - the settings page must still open
+        log.warning("Reading the history size failed: %s", exc)
+        return {"size_bytes": None, "rows": None, "oldest": None}
+
+
+@app.delete("/api/history", dependencies=[Depends(require_auth)])
+def api_history_clear():
+    removed = history.clear()
+    db.log_event("History cleared", f"{removed} samples removed.", db.INFO)
     return {"ok": True, "removed": removed}
 
 

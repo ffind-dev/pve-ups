@@ -94,7 +94,16 @@ CLUSTER_PROBE_STATUSES = (
     "denied",   # 403 — the token lacks the privilege
     "absent",   # answered, but the feature is not there (no Ceph, no disarm-ha, standalone)
     "error",    # anything else
+    # A read that failed ("denied" or "error") for a feature none of the ticked options
+    # uses. Assigned afterwards by mark_unneeded(), never by a read itself: whether a
+    # privilege matters depends on the host's options, which inspect() does not see.
+    "unneeded",
 )
+
+# Which option a read serves (ClusterProbeEntry.feature). Reads without one feed what every
+# cluster member needs (Sys.Audit: membership, quorum, HA state) and always count.
+FEATURE_CEPH = "ceph"
+FEATURE_GUESTS = "guests"
 
 
 @dataclass
@@ -109,6 +118,7 @@ class ClusterProbeEntry:
     status: str                   # member of CLUSTER_PROBE_STATUSES
     value: str = ""               # short human-readable summary of what was read
     error: Optional[str] = None
+    feature: str = ""             # FEATURE_* this read serves; "" = always needed
 
 
 @dataclass
@@ -314,13 +324,33 @@ async def _get(client: httpx.AsyncClient, path: str) -> tuple[Optional[object], 
 
 
 def _record(info: ClusterInfo, path: str, value: str = "", err: Optional[str] = None,
-            absent: bool = False) -> None:
+            absent: bool = False, feature: str = "") -> None:
     """Add one diagnostics entry, classifying the outcome into the closed status set."""
     if err:
         status = "denied" if "not permitted" in err else "error"
     else:
         status = "absent" if absent else "ok"
-    info.probe.append(ClusterProbeEntry(name=path, status=status, value=value, error=err))
+    info.probe.append(
+        ClusterProbeEntry(name=path, status=status, value=value, error=err, feature=feature)
+    )
+
+
+def mark_unneeded(info: ClusterInfo, *, want_ceph: bool, want_guests: bool) -> None:
+    """Downgrade failed reads that no ticked option depends on to "unneeded".
+
+    The reads run regardless of the options, and a token scoped to exactly what the
+    ticked options need is the recommended setup — without this, a correctly built token
+    turned the diagnostics panel orange over a privilege nothing uses (#39). Only "denied"
+    and "error" move: an answered read stays what it is.
+    """
+    wanted = {FEATURE_CEPH: want_ceph, FEATURE_GUESTS: want_guests}
+    for entry in info.probe:
+        if (
+            entry.status in ("denied", "error")
+            and entry.feature
+            and not wanted.get(entry.feature, True)
+        ):
+            entry.status = "unneeded"
 
 
 def _priv_on(data: dict, priv: str, *paths: str) -> bool:
@@ -416,7 +446,7 @@ async def _read_ceph(client: httpx.AsyncClient, info: ClusterInfo) -> None:
         # not reported as a problem on its own — but it IS recorded, because otherwise
         # "no Ceph" and "could not ask" look identical to the operator.
         _record(info, "/cluster/ceph/status", "not available", absent=("not permitted" not in err),
-                err=err if "not permitted" in err else None)
+                err=err if "not permitted" in err else None, feature=FEATURE_CEPH)
     else:
         health = ""
         if isinstance(status, dict):
@@ -434,6 +464,7 @@ async def _read_ceph(client: httpx.AsyncClient, info: ClusterInfo) -> None:
             "/cluster/ceph/status",
             (health or "answered")
             + (f", MONs: {', '.join(info.mon_nodes)}" if info.mon_nodes else ""),
+            feature=FEATURE_CEPH,
         )
 
     path = "/cluster/ceph/flags"
@@ -443,7 +474,7 @@ async def _read_ceph(client: httpx.AsyncClient, info: ClusterInfo) -> None:
         # Only a denied read is actionable; anything else is almost always "no Ceph here".
         _record(info, path, "" if err and "not permitted" in err else "no Ceph configured",
                 err=err if err and "not permitted" in err else None,
-                absent=not (err and "not permitted" in err))
+                absent=not (err and "not permitted" in err), feature=FEATURE_CEPH)
         return
     info.ceph_configured = True
     for entry in data:
@@ -455,6 +486,7 @@ async def _read_ceph(client: httpx.AsyncClient, info: ClusterInfo) -> None:
         ", ".join(
             f"{f}={'ON' if info.ceph_flags.get(f) else 'off'}" for f in CEPH_MAINTENANCE_FLAGS
         ),
+        feature=FEATURE_CEPH,
     )
 
 
@@ -472,7 +504,7 @@ async def _read_guests(client: httpx.AsyncClient, info: ClusterInfo) -> None:
     if err or not isinstance(data, list):
         info.guests_error = err or "unexpected answer"
         info.errors.append(info.guests_error)
-        _record(info, path, err=info.guests_error)
+        _record(info, path, err=info.guests_error, feature=FEATURE_GUESTS)
         return
     for entry in data:
         if not isinstance(entry, dict) or not entry.get("vmid"):
@@ -489,8 +521,10 @@ async def _read_guests(client: httpx.AsyncClient, info: ClusterInfo) -> None:
             )
         )
     if not info.guests and not info.can_vm_audit:
-        info.guests_error = "cannot list guests (VM.Audit missing)"
-        _record(info, path, err=info.guests_error)
+        # Worded as a refusal so it is classified "denied" like a 403 — which is what it
+        # is, only delivered as a filtered 200.
+        info.guests_error = "not permitted to list guests (VM.Audit missing)"
+        _record(info, path, err=info.guests_error, feature=FEATURE_GUESTS)
         return
     info.guests_read = True
     running = info.running_guests
@@ -500,6 +534,7 @@ async def _read_guests(client: httpx.AsyncClient, info: ClusterInfo) -> None:
         f"{len(info.guests)} guests, {len(running)} running "
         f"({sum(1 for g in running if g.kind == 'qemu')} VM, "
         f"{sum(1 for g in running if g.kind == 'lxc')} CT)",
+        feature=FEATURE_GUESTS,
     )
 
 
@@ -508,7 +543,8 @@ async def _read_storages(client: httpx.AsyncClient, info: ClusterInfo) -> None:
     path = "/cluster/resources?type=storage"
     data, err = await _get(client, path)
     if err or not isinstance(data, list):
-        _record(info, path, err=err or "unexpected answer")
+        # Only feeds the "appliance on Ceph storage" check, hence the Ceph feature.
+        _record(info, path, err=err or "unexpected answer", feature=FEATURE_CEPH)
         return
     seen: set[str] = set()
     for entry in data:
@@ -523,6 +559,7 @@ async def _read_storages(client: httpx.AsyncClient, info: ClusterInfo) -> None:
         info, path,
         f"Ceph-backed: {', '.join(info.ceph_storages)}" if info.ceph_storages
         else "no Ceph-backed storage",
+        feature=FEATURE_CEPH,
     )
 
 
@@ -548,12 +585,13 @@ async def _read_self_guest(
                 "ambiguous": f"several guests are named '{hostname}'",
             }.get(info.self_guest_source, "not selected"),
             absent=True,
+            feature=FEATURE_GUESTS,
         )
         return
     path = f"{guest.path}/config"
     data, err = await _get(client, path)
     if err or not isinstance(data, dict):
-        _record(info, path, err=err or "unexpected answer")
+        _record(info, path, err=err or "unexpected answer", feature=FEATURE_GUESTS)
         return
     info.self_guest_storages = storages_of_config(data)
     ceph = [s for s in info.self_guest_storages if s in info.ceph_storages]
@@ -565,6 +603,7 @@ async def _read_self_guest(
         info, path,
         f"{guest.label}, storage: {', '.join(info.self_guest_storages) or 'none found'}"
         + (f" — ON CEPH: {', '.join(ceph)}" if ceph else ""),
+        feature=FEATURE_GUESTS,
     )
 
 

@@ -47,11 +47,15 @@ async function api(path, method = "GET", body) {
 }
 
 function show(view) {
-  ["login", "firstrun", "dashboard", "settings"].forEach((v) => {
+  ["login", "firstrun", "dashboard", "history", "settings"].forEach((v) => {
     const el = $(v); if (el) el.hidden = (v !== view);
   });
   document.querySelectorAll(".tab").forEach((tab) =>
     tab.classList.toggle("active", tab.dataset.view === view));
+  // The History tab trades the reading width for chart width (style.css: .view-wide).
+  document.body.classList.toggle("view-wide", view === "history");
+  // history.js loads after this file; its refresh timer stops whenever the tab is left.
+  if (view !== "history" && typeof leaveHistory === "function") leaveHistory();
 }
 
 // --- bootstrap --------------------------------------------------------------
@@ -128,6 +132,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
       return;
     }
     show(v);
+    if (v === "history") await enterHistory();
   };
 });
 
@@ -264,6 +269,11 @@ async function refreshStatus() {
   // what keeps their delivery note current while the settings view stays open.
   updateWebhookDelivery();
   $("version").textContent = "v" + s.appliance.version;
+  // The tab exists only while the history is recorded; switched off elsewhere (another
+  // browser, a backup import), an open History view falls back to the dashboard.
+  const histOn = !!s.appliance.history_enabled;
+  $("historyTab").hidden = !histOn;
+  if (!histOn && !$("history").hidden) show("dashboard");
   checkAppVersion(s.appliance.version);
 
   const a = s.appliance, sd = s.shutdown, upses = s.ups || [];
@@ -512,12 +522,11 @@ function renderClusters(clusters, shuttingDown) {
       bits.push(t("cluster.haDisarmed", { state: c.ha_armed_state }));
     }
     // Two deployment mistakes that only bite during an outage, so they belong where the
-    // operator actually looks. Only shown once a Ceph cluster is configured for it —
-    // elsewhere no guests are stopped and neither question arises.
-    if (c.ceph_configured) {
-      if (c.self_guest_on_ceph === true) bits.push(t("cluster.selfOnCeph"));
-      else if (c.self_guest_vmid == null) bits.push(t("cluster.selfUnknown"));
-    }
+    // operator actually looks. On Ceph storage is always worth saying (it is only ever
+    // true on a Ceph cluster); an unknown own guest only where the guest stop is on and
+    // waits for it — elsewhere no guests are stopped and the question does not arise.
+    if (c.self_guest_on_ceph === true) bits.push(t("cluster.selfOnCeph"));
+    else if (c.self_guest_missing) bits.push(t("cluster.selfUnknown"));
     const state = bits.length ? bits.join(" · ") : t("cluster.ok");
     const guests = c.guests_readable
       ? " · " + t("cluster.guests", { running: c.guests_running, total: c.guests_total })
@@ -549,7 +558,8 @@ const PRIV_PROTOS = [["none", t("proto.none")], ["des", "DES"], ["aes", "AES-128
 // Must match config.UpsSourceType; tests/test_i18n.py keeps the labels in both dictionaries.
 const SOURCE_TYPES = [["snmp", t("src.snmp")], ["nut", t("src.nut")]];
 // Must match config.SnmpMib; tests/test_i18n.py keeps the labels in both dictionaries.
-const SNMP_MIBS = [["auto", t("mib.auto")], ["rfc1628", t("mib.rfc1628")], ["apc", t("mib.apc")]];
+const SNMP_MIBS = [["auto", t("mib.auto")], ["rfc1628", t("mib.rfc1628")], ["apc", t("mib.apc")],
+  ["cyberpower", t("mib.cyberpower")]];
 const DEFAULT_PORTS = { snmp: 161, nut: 3493 };
 // Must match config.HostType; tests/test_i18n.py keeps the labels in both dictionaries.
 const HOST_TYPES = [["pve", t("htype.pve")], ["pbs", t("htype.pbs")]];
@@ -844,8 +854,19 @@ function syncClusterThresholds() {
   if (!block) return;
   block.hidden = !document.querySelector("#hostRows .h_cluster:checked");
   const box = $("applianceBox");
-  // Only the Ceph path stops guests, and only then does it matter which guest we are.
-  if (box) box.hidden = !document.querySelector("#hostRows .h_cluster_ceph:checked");
+  // Only the guest stop (on its own, or as part of the Ceph option) stops guests, and only
+  // then does it matter which guest we are.
+  if (box) box.hidden = !guestStopRow();
+  updateClusterBudgetHint();
+}
+
+// First host card on which the cluster-wide guest stop is in effect: ticked by itself, or
+// included by the Ceph option. Only cards that are cluster members count.
+function guestStopRow() {
+  return [...document.querySelectorAll("#hostRows .host-cfg")].find((el) => {
+    const on = (cls) => { const c = el.querySelector(cls); return !!(c && c.checked); };
+    return on(".h_cluster") && (on(".h_cluster_ceph") || on(".h_cluster_guest_stop"));
+  }) || null;
 }
 
 // --- the appliance's own guest ----------------------------------------------
@@ -912,7 +933,7 @@ function renderApplianceGuests(sel, guests, chosen) {
 
 async function loadApplianceGuests() {
   const state = $("ap_self_state");
-  const row = document.querySelector("#hostRows .h_cluster_ceph:checked")?.closest(".host-cfg");
+  const row = guestStopRow();
   if (!row) { state.textContent = t("appl.needHost"); return; }
   state.textContent = t("appl.loading");
   try {
@@ -938,12 +959,13 @@ function onApplianceChange() {
 }
 
 // The whole sequence now holds the battery for the disarm, the guests and the nodes.
-// Shown as one number because that is what has to fit inside the trigger.
+// Shown as one number because that is what has to fit inside the trigger. The guest term
+// only where the guest stop is on, exactly like engine.shutdown_budget() counts it.
 function updateClusterBudgetHint() {
   const el = $("th_cluster_total_hint");
   if (!el) return;
   const prep = getNum("th_cluster_prep_timeout_s") || 60;
-  const guests = getNum("th_cluster_guest_shutdown_timeout_s") || 300;
+  const guests = guestStopRow() ? (getNum("th_cluster_guest_shutdown_timeout_s") || 300) : 0;
   const nodes = getNum("th_host_shutdown_timeout_s") || 60;
   el.textContent = t("th.clusterTotalHint", { total: prep + guests + nodes });
 }
@@ -996,6 +1018,10 @@ async function loadConfig() {
   // "on", so treat an absent one as on rather than letting the checkbox render unticked and
   // then save that back as an opt-out the user never made.
   setChk("selftest_log_ok", c.selftest_log_ok !== false);
+  const hc = c.history || {};
+  setChk("hist_enabled", hc.enabled !== false);
+  setVal("hist_retention_days", hc.retention_days || 90);
+  refreshHistoryInfo();
 
   renderWebhooks(c.notifications.webhooks || []);
 
@@ -1080,6 +1106,15 @@ function addHostRow(h, isNew, open) {
         <p class="warnnote h_unitwarn" hidden><svg class="icon"><use href="#i-alert"></use></svg>
           <span>${esc(t("host.clusterShutdownAllWarn"))}</span></p>
         <label class="chkline" title="${esc(t("host.clusterHaTitle"))}"><input class="h_cluster_ha_disarm" type="checkbox" ${h.cluster_ha_disarm !== false ? "checked" : ""} /> ${esc(t("host.clusterHa"))}</label>
+        <!-- The cluster-wide guest stop (#43): runs after the HA disarm and before the
+             Ceph flags, hence its place between the two. Defaults to OFF (see
+             PveHostConfig.cluster_guest_stop). With Ceph ticked it is shown ticked and
+             locked — the Ceph option includes it — while the card's own value is kept in
+             data-own, so unticking Ceph brings back what was set before. -->
+        <label class="chkline" title="${esc(t("host.clusterGuestsTitle"))}"><input class="h_cluster_guest_stop" type="checkbox" ${h.cluster_guest_stop ? "checked" : ""} data-own="${h.cluster_guest_stop ? "1" : ""}" /> ${esc(t("host.clusterGuests"))}</label>
+        <p class="help h_guestnote" hidden>${esc(t("host.clusterGuestsHelp"))}
+          <a data-manual="cluster-guests" target="_blank" rel="noopener">${esc(t("host.clusterGuestsDoc"))}</a></p>
+        <p class="help h_guestbyceph" hidden>${esc(t("host.clusterGuestsByCeph"))}</p>
         <p class="help">${esc(t("host.clusterPrivHint"))}
           <a data-manual="cluster" target="_blank" rel="noopener">${esc(t("host.clusterPrivDoc"))}</a></p>
         <p class="help">${esc(t("host.clusterHelp"))}</p>
@@ -1091,8 +1126,8 @@ function addHostRow(h, isNew, open) {
         <!-- Ceph defaults to OFF (see PveHostConfig.cluster_ceph), so plain truthiness —
              "!== false" would tick it on every newly added card. This one switch covers
              the whole hyper-converged procedure: stopping every guest first, then the
-             flags. The guest stop deliberately has no tick of its own — with Ceph it is
-             not optional, and a tick whose absence hangs the cluster is a trap. -->
+             flags. It switches the guest stop above on by itself — with Ceph it is not
+             optional, and a tick whose absence hangs the cluster is a trap. -->
         <label class="chkline" title="${esc(t("host.clusterCephTitle"))}"><input class="h_cluster_ceph" type="checkbox" ${h.cluster_ceph ? "checked" : ""} /> ${esc(t("host.clusterCeph"))}</label>
         <p class="help h_cephnote">${esc(t("host.clusterCephHelp"))}
           <a data-manual="cluster-ceph" target="_blank" rel="noopener">${esc(t("host.clusterCephDoc"))}</a></p>
@@ -1173,11 +1208,24 @@ function addHostRow(h, isNew, open) {
     // read as a description of the cluster rather than of the option.
     const ceph = el.querySelector(".h_cluster_ceph").checked;
     el.querySelector(".h_cephnote").hidden = !ceph;
+    // The Ceph option includes the guest stop: show it ticked and locked, but keep the
+    // card's own value for the moment Ceph is unticked again.
+    const gs = el.querySelector(".h_cluster_guest_stop");
+    if (ceph && !gs.disabled) {
+      gs.dataset.own = gs.checked ? "1" : "";
+      gs.checked = true;
+      gs.disabled = true;
+    } else if (!ceph && gs.disabled) {
+      gs.checked = gs.dataset.own === "1";
+      gs.disabled = false;
+    }
+    el.querySelector(".h_guestbyceph").hidden = !ceph;
+    el.querySelector(".h_guestnote").hidden = ceph || !gs.checked;
     // Only a problem when the two halves can disagree: the preparation is cluster-wide,
-    // so a partial shutdown is what leaves nodes stranded. Worth shouting about with
-    // Ceph, where it also means every guest was stopped for nothing.
+    // so a partial shutdown is what leaves nodes stranded. Worth shouting about once the
+    // guests are stopped cluster-wide, which then happens for nothing on the survivors.
     el.querySelector(".h_unitwarn").hidden =
-      el.querySelector(".h_cluster_shutdown_all").checked || !ceph;
+      el.querySelector(".h_cluster_shutdown_all").checked || !gs.checked;
     syncThisHostFromAppliance(el);
     updSum();
   };
@@ -1191,7 +1239,11 @@ function addHostRow(h, isNew, open) {
   el.querySelector(".h_url").oninput = syncDuplicateUrls;
   el.querySelector(".h_this").onchange = () => { syncFlags(); drawConfigTopology(); };
   el.querySelector(".h_cluster").onchange = () => { syncFlags(); syncClusterThresholds(); };
-  el.querySelector(".h_cluster_ceph").onchange = syncFlags;
+  el.querySelector(".h_cluster_ceph").onchange = () => { syncFlags(); syncClusterThresholds(); };
+  el.querySelector(".h_cluster_guest_stop").onchange = () => {
+    syncFlags();
+    syncClusterThresholds();
+  };
   el.querySelector(".h_cluster_shutdown_all").onchange = syncFlags;
   // Order and "active" do not touch the diagram, but they do change the shutdown
   // sequence shown below it.
@@ -1301,6 +1353,13 @@ function hostFromRow(tr) {
     cluster: tr.querySelector(".h_cluster").checked,
     cluster_shutdown_all: tr.querySelector(".h_cluster_shutdown_all").checked,
     cluster_ceph: tr.querySelector(".h_cluster_ceph").checked,
+    // The card's own value, not the locked display: with Ceph ticked the box shows the
+    // guest stop on regardless (see syncFlags), and saving that would make it stick once
+    // Ceph is unticked.
+    cluster_guest_stop: (() => {
+      const gs = tr.querySelector(".h_cluster_guest_stop");
+      return gs.disabled ? gs.dataset.own === "1" : gs.checked;
+    })(),
     cluster_ha_disarm: tr.querySelector(".h_cluster_ha_disarm").checked,
   };
 }
@@ -1727,8 +1786,36 @@ function buildConfig() {
       self_external: applianceChoice().external,
     },
     notifications: { webhooks: currentWebhookList() },
+    history: {
+      enabled: getChk("hist_enabled"),
+      retention_days: getNum("hist_retention_days") || 90,
+    },
   };
 }
+
+// Size and age of the stored history, next to its switch. Informational only: a failed
+// read leaves the line empty rather than blocking the settings page.
+async function refreshHistoryInfo() {
+  const el = $("hist_size");
+  if (!el) return;
+  try {
+    const i = await api("/api/history/info");
+    if (i.size_bytes == null) { el.textContent = ""; return; }
+    const mb = i.size_bytes / 1048576;
+    el.textContent = t("sys.historySize", {
+      size: mb >= 10 ? mb.toFixed(0) + " MB" : mb >= 0.1 ? mb.toFixed(1) + " MB" : Math.ceil(i.size_bytes / 1024) + " KB",
+      since: i.oldest ? new Date(i.oldest * 1000).toLocaleDateString() : "–",
+    });
+  } catch (_) { el.textContent = ""; }
+}
+
+$("hist_clear").onclick = async () => {
+  if (!confirm(t("confirm.clearHistory"))) return;
+  try {
+    await api("/api/history", "DELETE");
+  } catch (e) { $("hist_size").textContent = "✗ " + e.message; return; }
+  refreshHistoryInfo();
+};
 
 // Cards that would be saved in a state that cannot work, with the reason to show for each.
 //

@@ -22,7 +22,7 @@ services:
       - TZ=Europe/Berlin
     volumes:
       - pve-ups-config:/etc/pve-usv    # config.yaml (contains secrets, 0600)
-      - pve-ups-data:/var/lib/pve-usv  # events.db + persistent engine state
+      - pve-ups-data:/var/lib/pve-usv  # events.db, history.db + persistent engine state
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/health').status==200 else 1)"]
       interval: 30s

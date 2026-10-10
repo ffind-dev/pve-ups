@@ -77,6 +77,20 @@ def events_since(hours: int = 48, limit: int = 500, path: Path = DB_PATH) -> lis
     return [dict(r) for r in rows]
 
 
+def events_between(start: datetime, end: datetime, limit: int = 1000,
+                   path: Path = DB_PATH) -> list[dict]:
+    """Events from ``start`` to ``end`` (oldest first, capped at the newest ``limit``),
+    for the markers on the History tab. Same string comparison as events_since()."""
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT ts, severity, event, detail FROM ("
+            "SELECT id, ts, severity, event, detail FROM events "
+            "WHERE ts >= ? AND ts <= ? ORDER BY id DESC LIMIT ?) ORDER BY id",
+            (start.isoformat(), end.isoformat(), limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def severity_counts_since(hours: int = 48, path: Path = DB_PATH) -> dict:
     """Count events per severity in the last ``hours`` (accurate regardless of any cap)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()

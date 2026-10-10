@@ -6,7 +6,7 @@ and no config files.**
 *Deutsche Fassung: [README.de.md](README.de.md)*
 
 PVE-UPS monitors one or more UPS devices — **with an SNMP network card (standard RFC 1628
-or a vendor MIB such as APC PowerNet)** or **through a NUT server**, which is how USB and
+or a vendor MIB: APC PowerNet, CyberPower)** or **through a NUT server**, which is how USB and
 serial UPS devices are read — and, on a power outage, shuts down one or more **Proxmox VE
 hosts** (and, if you want, a **Proxmox Backup Server**) in an orderly fashion. The modern
 replacement for vendor-locked appliances such as APC PowerChute Network Shutdown.
@@ -34,7 +34,8 @@ rather than replacing it:
   revocable **API token** with only the `Sys.PowerMgmt` privilege. No root SSH anywhere.
 - **Vendor-neutral, but not naive about vendors** — the standard RFC 1628 UPS MIB via
   SNMP v1/v2c/v3 (pure-Python, no net-snmp), automatically switching to a vendor MIB where
-  the standard falls short (APC PowerNet), or any existing NUT server as a read-only client.
+  the standard falls short (APC PowerNet, CyberPower), or any existing NUT server as a
+  read-only client.
 - **NUT stays a driver, never the brain** — PVE-UPS only ever reads variables from `upsd`.
   No `upsmon`, no `upssched`, no shutdown scripts: the thresholds, the host policy and the
   decision stay in the appliance, where you can see them.
@@ -97,6 +98,22 @@ curl -fsSL https://github.com/ffind-dev/pve-ups/releases/latest/download/install
   --ctid 950 --ip 10.0.0.50/24 --gateway 10.0.0.1 --hostname pve-usv
 ```
 
+All options are optional; `--help` lists them with their defaults
+(`curl … | bash -s -- --help`):
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--ctid <id>` | `950` | ID of the new container |
+| `--hostname <name>` | `pve-usv` | Hostname of the container |
+| `--storage <name>` | automatic | Storage for the container disk (content `rootdir`). Without it: `local-lvm`, then `local-zfs`, then the first other non-Ceph storage |
+| `--template-storage <name>` | `local` | Storage the Debian 12 template is downloaded to (content `vztmpl`). The default falls back to another suitable storage; a named one is refused if it cannot hold templates |
+| `--bridge <bridge>` | `vmbr0` | Network bridge |
+| `--ip <dhcp\|address/cidr>` | `dhcp` | `dhcp` or a static address such as `10.0.0.50/24` |
+| `--gateway <ip>` | – | Default gateway, only used with a static `--ip` |
+| `--memory <MB>` | `256` | RAM of the container |
+| `--disk <GB>` | `4` | Size of the container disk |
+| `--allow-ceph-storage` | off | Accept a Ceph-backed `--storage` (see below) |
+
 On a **Ceph cluster** the installer refuses a Ceph-backed rootfs storage (and skips one
 when picking automatically): this container has to keep running while the cluster it is
 shutting down goes away, which on Ceph it cannot — once the pool loses `min_size` its own
@@ -113,9 +130,10 @@ Then open the web UI at **`http://<container-ip>:8080`**:
 4. When everything checks out: **disable dry-run** (mode "ARMED").
 
 > The LXC typically runs on one of the protected hosts. Mark that host as **"This host"**
-> in the host list — it is then guaranteed to shut down last. On a Ceph cluster, pick this
-> container under *Triggers → This appliance* instead: the mark then follows that selection,
-> and the cluster-wide guest shutdown knows which guest it must never stop.
+> in the host list — it is then guaranteed to shut down last. With the cluster-wide guest
+> stop (or on a Ceph cluster), pick this container under *Triggers → This appliance*
+> instead: the mark then follows that selection, and the guest stop knows which guest it
+> must never stop.
 
 ## Docker (alternative deployment)
 
@@ -131,7 +149,7 @@ docker compose up -d
 ```
 
 This mounts two named volumes (`/etc/pve-usv` for the config, `/var/lib/pve-usv` for the
-event log/state) so data survives container recreation. Open
+event log, history and state) so data survives container recreation. Open
 `http://<container-host>:8080` and run through the wizard as usual.
 
 **Docker mode has two differences from the LXC deployment**, because there is no
@@ -258,7 +276,9 @@ from Proxmox VE and explain the commands above:
   - **SNMP v1/v2c and v3** (authPriv), read-only. Reads the standard RFC 1628 UPS MIB or a
     **vendor MIB** — currently **APC PowerNet**, which is what makes APC cards work that
     implement RFC 1628 partially (NMC2 below firmware sumx/sy v5.1.7) or not at all (NMC1:
-    AP9617/AP9618/AP9619). Picked automatically per UPS; selectable by hand.
+    AP9617/AP9618/AP9619), and **CyberPower** (CPS-MIB, RMCARD family), read one value per
+    request for cards that do not answer a request for several values at once. Picked
+    automatically per UPS; selectable by hand.
   - **NUT server** (TCP 3493) as a read-only client — for UPS devices without a network
     card. Works with the UPS server built into a Synology/QNAP/TrueNAS NAS, a Raspberry
     Pi, OPNsense, or a NUT install on a Proxmox host. QNAP and Synology prescribe their own
@@ -272,13 +292,23 @@ from Proxmox VE and explain the commands above:
 - **Bilingual UI**: English (default) and German, picked automatically from the browser
   language; user manual built in (both languages).
 - Per-UPS **threshold overrides** on top of the global defaults.
+- **History tab**: remaining runtime, load and charge of every UPS over time (1 hour to
+  90 days, or any start and end you pick), with outages, triggers and unreachable stretches as coloured bands, event-log
+  markers, drag-to-zoom, an outage table and CSV export. Kept for a configurable number of
+  days in its own small database and written in the background, so it never touches the
+  shutdown path; can be switched off. On for new installations, off after an update until
+  switched on.
 - **Proxmox VE cluster preparation** (**Beta**, needs Proxmox VE **9.2+**): once per
   cluster, before its first node goes down, the HA manager is disarmed, so services are not
   recovered onto nodes that are shutting down themselves. Verified rather than assumed, under
   a hard timeout, and a **“Restore cluster”** button undoes it afterwards. Because that
   preparation is cluster-wide while the shutdown is per host, **“shut the whole cluster down
   as a unit”** (on by default) takes every node of the cluster down as soon as one of them is
-  due — otherwise a single failing UPS leaves the cluster in halves. Marked Beta while it
+  due — otherwise a single failing UPS leaves the cluster in halves. Optionally, **every
+  guest in the cluster is asked to shut down at once** before the first node goes down
+  (“Stop all guests cluster-wide first”, off by default): faster than each node working
+  through its guests in reverse startup order when the battery is short, at the price of
+  ignoring that order. Marked Beta while it
   gathers field experience; opt-in throughout, and reports are welcome via
   [issues](https://github.com/ffind-dev/pve-ups/issues).
 - **Hyper-converged clusters (Ceph)** (**Beta**): with the Ceph option on, PVE-UPS follows
@@ -389,6 +419,9 @@ PVE_USV_CONFIG=./dev-config.yaml PVE_USV_DB=./dev-events.db python -m app.main
 #         The APC snapshots carry PowerNet OIDs only, i.e. a card without RFC 1628:
 #                                    community "apc"         -> mains, MIB resolves to APC
 #                                    community "apc-battery"  -> outage on the APC MIB
+#         Same for CyberPower (CPS-MIB only, read one object per request):
+#                                    community "cyberpower"         -> mains, MIB resolves to CyberPower
+#                                    community "cyberpower-battery" -> outage on the CyberPower MIB
 #   NUT:  host 127.0.0.1, port 3493, UPS name "ups"
 ```
 
@@ -407,7 +440,8 @@ PVE_USV_CONFIG=./dev-config.yaml PVE_USV_DB=./dev-events.db python -m app.main
 - Shutdown targets are **Proxmox VE and Proxmox Backup Server**. Proxmox Mail Gateway and
   Datacenter Manager are not implemented: each speaks its own token scheme, and shipping
   untested support would be worse than none.
-- Reads the standard RFC 1628 UPS MIB, the APC PowerNet MIB, or a NUT server's variables.
+- Reads the standard RFC 1628 UPS MIB, the APC PowerNet and CyberPower MIBs, or a NUT
+  server's variables.
   Other vendor MIBs are not implemented yet — a device outside those needs either RFC 1628
   or a NUT driver. There is no direct USB/serial support in the appliance itself; a locally
   attached UPS is reached through a NUT server.

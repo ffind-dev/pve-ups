@@ -62,6 +62,7 @@ class SnmpMib(str, Enum):
     auto = "auto"  # read RFC 1628, switch to a vendor MIB when the device answers it
     rfc1628 = "rfc1628"  # the standard UPS-MIB only
     apc = "apc"  # APC PowerNet-MIB (1.3.6.1.4.1.318) only
+    cyberpower = "cyberpower"  # CyberPower CPS-MIB (1.3.6.1.4.1.3808) only
 
 
 class SnmpAuthProto(str, Enum):
@@ -354,7 +355,7 @@ class PveHostConfig(HostConfig):
     # Whether the whole cluster goes down as soon as ONE of its nodes is due.
     #
     # Default on, because the preparation is already cluster-wide: it disarms HA and — with
-    # the Ceph option — stops every guest in the cluster. Shutting down only the nodes whose
+    # the Ceph option or the guest stop — stops every guest in the cluster. Shutting down only the nodes whose
     # own UPS happened to trigger then leaves the rest standing with no guests, HA disarmed
     # and the maintenance flags set. On a hyper-converged cluster that is worse than it
     # sounds: take two of three monitors down and Ceph has no quorum, so the survivors have
@@ -375,11 +376,19 @@ class PveHostConfig(HostConfig):
     #
     # This one switch covers the WHOLE hyper-converged procedure, not just the flags:
     # stopping every guest cluster-wide first, then setting the flags (see
-    # cluster._prepare). The guest stop deliberately has no switch of its own — with Ceph
-    # it is not optional but the first step of the official procedure, and a tick whose
-    # absence hangs the cluster during a power cut would be a trap. Without Ceph nothing
-    # of this runs, which is why a plain cluster is unaffected.
+    # cluster._prepare). With Ceph the guest stop is not optional but the first step of
+    # the official procedure, so this switch always includes it — whatever
+    # cluster_guest_stop says. A Ceph tick that could be had without the guest stop would
+    # be a trap: the cluster hangs during the power cut.
     cluster_ceph: bool = False
+    # The same cluster-wide guest stop for a cluster WITHOUT Ceph (#43): every guest is
+    # asked to shut down at once, in parallel, before the first node goes down — instead
+    # of each node working through its own guests in reverse startup order as it powers
+    # off, which with many order groups can take longer than the battery lasts. Opt-in
+    # and off by default: it deliberately ignores the configured startup order, and
+    # guests that do not stop in time are forced off (cluster_guest_force_after_s).
+    # Effective value: cluster_ceph or cluster_guest_stop (see Engine._cluster_switches).
+    cluster_guest_stop: bool = False
     # Kept even where the endpoint is missing (PVE < 9.2): the value is checked against
     # runtime feature detection, so an upgrade to 9.2 activates it without the user
     # having to notice and re-tick anything.
@@ -728,6 +737,44 @@ class Notifications(BaseModel):
         return data
 
 
+class HistoryConfig(BaseModel):
+    """The per-UPS history behind the History tab (#37): runtime, load, charge and power
+    source over time, kept in its own SQLite file next to the event log (app/history.py).
+
+    Switching it off stops both the recording and the tab — for whoever would rather not
+    spend the disk space or the write load (an SD card, say). What was recorded stays until
+    it ages out or is cleared.
+    """
+
+    # On for a new installation. An existing configuration without this section gets it
+    # OFF instead (see migrate_history_default): an update must not start writing to a disk
+    # nobody sized for it.
+    enabled: bool = True
+    # How long samples are kept. Free in days; about 1,440 rows per UPS and day, i.e. a
+    # few MB per UPS and quarter.
+    retention_days: int = 90
+
+    _corrections: list[str] = PrivateAttr(default_factory=list)
+
+    @model_validator(mode="after")
+    def _repair_ranges(self) -> "HistoryConfig":
+        _repair(self, "retention_days", lo=1, hi=365)
+        return self
+
+
+def migrate_history_default(data):
+    """Give a configuration written before the history existed ``history.enabled: false``.
+
+    Applied where an EXISTING configuration comes in — load_config() and the backup import —
+    and nowhere else: a fresh installation has no file, gets AppConfig() and with it the
+    default (on). Kept out of a model validator on purpose, so building an AppConfig in code
+    keeps the documented default instead of depending on which keys happened to be passed.
+    """
+    if isinstance(data, dict) and "history" not in data:
+        data["history"] = {"enabled": False}
+    return data
+
+
 class AppConfig(BaseModel):
     # Marks whether the setup wizard has been completed at least once.
     configured: bool = False
@@ -742,6 +789,8 @@ class AppConfig(BaseModel):
     # Where the appliance itself runs. A config written before this existed validates to
     # the defaults, so no migration validator is needed.
     appliance: ApplianceConfig = ApplianceConfig()
+    # Per-UPS history (#37). See HistoryConfig for why an older config gets it off.
+    history: HistoryConfig = HistoryConfig()
 
     # Scheduled self-test: verify the API token + power-management privilege still work,
     # so a broken/expired credential is caught long before a real outage needs it.
@@ -888,6 +937,7 @@ class AppConfig(BaseModel):
         cannot be loaded at all.
         """
         out = [f"thresholds: {c}" for c in self.thresholds._corrections]
+        out += [f"history: {c}" for c in self.history._corrections]
         for u in self.ups:
             out += [f"UPS {u.label}: {c}" for c in u._corrections]
             out += [f"UPS {u.label} override: {c}" for c in u.overrides._corrections]
@@ -1090,7 +1140,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         return AppConfig()
     with path.open("r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
-    cfg = AppConfig.model_validate(data)
+    # An existing file is an existing installation: no history section means it predates
+    # the history, and an update leaves it off until someone switches it on.
+    cfg = AppConfig.model_validate(migrate_history_default(data))
     # A config written before hosts had ids gets them here, so the runtime keys and the
     # ids the UI sends back are id-based from the first request on. Nothing is written to
     # disk until the next save, which is enough: the assignment is deterministic.

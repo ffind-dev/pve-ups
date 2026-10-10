@@ -27,8 +27,15 @@
   --crit: #f87171;      --crit-soft: rgba(248, 113, 113, .15); --crit-bd: rgba(248, 113, 113, .4);
   --info: #60a5fa;      --info-soft: rgba(96, 165, 250, .14); --info-bd: rgba(96, 165, 250, .38);
 
+  /* chart series for the History tab: categorical, assigned in this fixed order and
+     never cycled. Validated (CVD separation, contrast) against --surface in both modes. */
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+  --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+
   --r-sm: 6px; --r: 10px; --r-lg: 14px; --r-pill: 999px;
   --maxw: 1120px;
+  /* the History tab trades the reading width for chart width */
+  --maxw-wide: 1600px;
 }
 
 /* Light palette — applied explicitly and (for "auto") when the OS prefers light. */
@@ -49,6 +56,9 @@
   --warn: #b45309; --warn-soft: rgba(217, 119, 6, .14); --warn-bd: rgba(217, 119, 6, .32);
   --crit: #dc2626; --crit-soft: rgba(220, 38, 38, .1);  --crit-bd: rgba(220, 38, 38, .3);
   --info: #2563eb; --info-soft: rgba(37, 99, 235, .1);  --info-bd: rgba(37, 99, 235, .3);
+  /* chart series (categorical, fixed order; validated for this surface) */
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
 }
 @media (prefers-color-scheme: light) {
   :root[data-theme="auto"] {
@@ -68,6 +78,9 @@
     --warn: #b45309; --warn-soft: rgba(217, 119, 6, .14); --warn-bd: rgba(217, 119, 6, .32);
     --crit: #dc2626; --crit-soft: rgba(220, 38, 38, .1);  --crit-bd: rgba(220, 38, 38, .3);
     --info: #2563eb; --info-soft: rgba(37, 99, 235, .1);  --info-bd: rgba(37, 99, 235, .3);
+    /* chart series (categorical, fixed order; validated for this surface) */
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+    --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
   }
 }
 
@@ -490,6 +503,98 @@ svg.topo .topo-node.hl.is-warn rect { stroke: var(--warn); }
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
 }
+
+/* ---------- History tab (#37) -------------------------------------------------- */
+body.view-wide main { max-width: var(--maxw-wide); }
+.hist-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 10px; }
+.hist-bar .spacer { flex: 1 1 auto; }
+.hseg {
+  display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r);
+}
+.hseg-btn {
+  background: transparent; color: var(--text-muted); border: none; border-radius: 7px;
+  padding: 5px 11px; font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.hseg-btn:hover { color: var(--text); }
+.hseg-btn.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); font-weight: 600; }
+.hseg-btn:disabled { opacity: .4; cursor: not-allowed; }
+.hseg-btn .key { display: inline-block; width: 12px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
+.hist-toggles { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--text-muted); }
+/* The global label rule stacks a label's content in a column (form fields); these are
+   checkbox rows. */
+.hist-toggles label { display: inline-flex; flex-direction: row; align-items: center; gap: 6px;
+  cursor: pointer; font-size: 12.5px; font-weight: 500; }
+.hist-span { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.hist-span label { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
+.hist-span input { width: auto; padding: 4px 8px; font-size: 12.5px; }
+/* The native date picker draws its own icon and popup; without this they stay light-theme
+   (a dark icon on a dark field). Follows the app's theme switch, not only the OS. */
+.hist-span input { color-scheme: dark; }
+:root[data-theme="light"] .hist-span input { color-scheme: light; }
+@media (prefers-color-scheme: light) {
+  :root[data-theme="auto"] .hist-span input { color-scheme: light; }
+}
+.hist-chart { position: relative; touch-action: pan-y; }
+.hist-chart.loading svg { opacity: .55; transition: opacity .15s; }
+svg.hist { display: block; width: 100%; user-select: none; }
+.hist .hgrid { stroke: var(--border); stroke-width: 1; }
+.hist .haxis { fill: var(--text-faint); font-size: 11px; }
+.hist .htitle { fill: var(--text-muted); font-size: 11.5px; font-weight: 600; }
+.hist .hlabel { fill: var(--text-muted); font-size: 11px; }
+.hist .hline { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.hist .hline.dashed { stroke-dasharray: 5 4; }
+.hist .hthresh { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.hist .hb-battery { fill: var(--warn-soft); }
+.hist .hb-triggered { fill: var(--crit-soft); }
+.hist .hb-bypass { fill: var(--info-soft); }
+.hist .hb-other { fill: var(--surface-2); }
+.hist .hb-hatch { stroke: var(--text-faint); stroke-width: 1.5; opacity: .55; }
+.hist .hstrip { stroke: var(--surface); stroke-width: 1; }
+.hist .hstrip.hb-mains { fill: var(--ok-soft); }
+.hist .hstriplabel { fill: var(--text); font-size: 10.5px; font-weight: 600;
+  paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
+.hist .hmark { stroke-width: 1; stroke-dasharray: 2 2; }
+.hist .hmark.warning { stroke: var(--warn); }
+.hist .hmark.critical { stroke: var(--crit); stroke-width: 1.5; stroke-dasharray: none; }
+.hist .hmark.info { stroke: var(--text-faint); }
+.hist .hmarktip.warning { fill: var(--warn); }
+.hist .hmarktip.critical { fill: var(--crit); }
+.hist .hmarktip.info { fill: var(--text-faint); }
+.hist .hcross { stroke: var(--text-muted); stroke-width: 1; }
+.hist .hsel { fill: var(--info-soft); stroke: var(--info-bd); }
+.hist .hdot { stroke: var(--surface); stroke-width: 2; }
+.hist .hoverlay { fill: transparent; cursor: crosshair; outline: none; }
+.hist-tip {
+  position: absolute; z-index: 5; pointer-events: none; min-width: 170px; max-width: 320px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  box-shadow: var(--shadow); padding: 8px 10px; font-size: 12px; color: var(--text-muted);
+}
+.hist-tip .tt-time { color: var(--text-faint); margin-bottom: 4px; }
+.hist-tip .tt-row { display: flex; align-items: center; gap: 7px; line-height: 1.6; }
+.hist-tip .tt-row b { color: var(--text); font-weight: 650; }
+.hist-tip .tt-key { display: inline-block; width: 12px; height: 0; border-top: 2px solid; flex: none; }
+.hist-tip .tt-ev { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.hist-tip .tt-ev b { color: var(--text); }
+.hist-tip .tt-ev .warning { color: var(--warn); }
+.hist-tip .tt-ev .critical { color: var(--crit); }
+.hist-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12px; color: var(--text-muted); }
+.hist-legend .lg { display: inline-flex; align-items: center; gap: 6px; }
+.hist-legend .sw { display: inline-block; width: 14px; height: 10px; border-radius: 2px; border: 1px solid var(--border); }
+.hist-legend .sw.hb-battery { background: var(--warn-soft); border-color: var(--warn-bd); }
+.hist-legend .sw.hb-triggered { background: var(--crit-soft); border-color: var(--crit-bd); }
+.hist-legend .sw.hb-bypass { background: var(--info-soft); border-color: var(--info-bd); }
+.hist-legend .sw.hb-mains { background: var(--ok-soft); border-color: var(--ok-bd); }
+.hist-legend .sw.hb-unreachable {
+  background: repeating-linear-gradient(45deg, transparent 0 3px, var(--text-faint) 3px 4.5px);
+}
+.hist-legend .ln { display: inline-block; width: 14px; height: 0; border-top: 2px solid; }
+.hist-legend .ln.dashed { border-top-style: dashed; }
+.hist-legend .mk { display: inline-block; width: 0; height: 12px; border-left: 1.5px dashed; }
+.hist-legend .mk.warning { border-color: var(--warn); }
+.hist-legend .mk.critical { border-color: var(--crit); border-left-style: solid; }
+#h_outages tbody tr { cursor: pointer; }
+#h_outages tbody tr:hover td { background: var(--surface-2); }
 
 /* ---------- Footer ----------------------------------------------------------- */
 footer { max-width: var(--maxw); margin: 20px auto 28px; padding: 0 18px; color: var(--text-faint); font-size: 12px; text-align: center; }

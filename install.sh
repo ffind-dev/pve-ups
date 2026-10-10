@@ -6,8 +6,10 @@
 #
 # Usage:
 #   ./install.sh [--ctid 950] [--hostname pve-usv] [--storage local-lvm] \
-#                [--bridge vmbr0] [--ip dhcp] [--memory 256] [--disk 4] \
-#                [--allow-ceph-storage]
+#                [--template-storage local] [--bridge vmbr0] \
+#                [--ip dhcp | --ip 10.0.0.50/24 --gateway 10.0.0.1] \
+#                [--memory 256] [--disk 4] [--allow-ceph-storage]
+#   ./install.sh --help      (all options with their defaults)
 #
 # The container must NOT live on Ceph storage: it has to keep running while the
 # cluster it is shutting down goes away. Ceph-backed storages are therefore skipped
@@ -41,6 +43,7 @@ CTID=950
 HOSTNAME=pve-usv
 STORAGE=""              # empty = pick a rootdir-capable storage automatically
 TEMPLATE_STORAGE=local
+TEMPLATE_STORAGE_GIVEN=0  # 1 = named with --template-storage: refuse instead of falling back
 BRIDGE=vmbr0
 IP=dhcp
 GATEWAY=""
@@ -49,18 +52,56 @@ DISK=4
 TEMPLATE="debian-12-standard"
 ALLOW_CEPH_STORAGE=0    # see the Ceph guard below
 
+usage() {
+  cat <<USAGE
+PVE-UPS installer - creates an unprivileged Debian 12 LXC on this Proxmox VE host.
+
+Usage: install.sh [options]
+
+  --ctid <id>                Container ID                         (default: $CTID)
+  --hostname <name>          Container hostname                   (default: $HOSTNAME)
+  --storage <name>           Storage for the container disk (content 'rootdir').
+                             Picked automatically when omitted: local-lvm, then
+                             local-zfs, then the first other non-Ceph storage.
+  --template-storage <name>  Storage the Debian 12 template is downloaded to
+                             (content 'vztmpl')                   (default: $TEMPLATE_STORAGE)
+                             Only the default falls back to another suitable
+                             storage on its own; a named one is checked and refused.
+  --bridge <bridge>          Network bridge                       (default: $BRIDGE)
+  --ip <dhcp|address/cidr>   'dhcp' or a static address, e.g. 10.0.0.50/24
+                                                                  (default: $IP)
+  --gateway <ip>             Default gateway; only used with a static --ip
+  --memory <MB>              RAM of the container                 (default: $MEMORY)
+  --disk <GB>                Size of the container disk           (default: $DISK)
+  --allow-ceph-storage       Accept a Ceph-backed --storage. Refused by default:
+                             the container has to outlive the cluster it shuts down.
+  -h, --help                 Show this help and exit
+
+Started as a one-liner, pass the options after 'bash -s --', e.g.:
+  curl -fsSL .../install.sh | bash -s -- --ip 10.0.0.50/24 --gateway 10.0.0.1
+USAGE
+}
+
+# An option that takes a value must get one. Without this check, "--ip" as the last word
+# died on `set -u` with an error about "\$2" instead of naming the option.
+_need_value() {
+  [[ -n "${2:-}" && "${2:0:2}" != "--" ]] || { echo "Option $1 needs a value (see --help)."; exit 1; }
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --ctid) CTID="$2"; shift 2;;
-    --hostname) HOSTNAME="$2"; shift 2;;
-    --storage) STORAGE="$2"; shift 2;;
-    --bridge) BRIDGE="$2"; shift 2;;
-    --ip) IP="$2"; shift 2;;          # e.g. 10.0.0.50/24
-    --gateway) GATEWAY="$2"; shift 2;;
-    --memory) MEMORY="$2"; shift 2;;
-    --disk) DISK="$2"; shift 2;;
+    --ctid) _need_value "$@"; CTID="$2"; shift 2;;
+    --hostname) _need_value "$@"; HOSTNAME="$2"; shift 2;;
+    --storage) _need_value "$@"; STORAGE="$2"; shift 2;;
+    --template-storage) _need_value "$@"; TEMPLATE_STORAGE="$2"; TEMPLATE_STORAGE_GIVEN=1; shift 2;;
+    --bridge) _need_value "$@"; BRIDGE="$2"; shift 2;;
+    --ip) _need_value "$@"; IP="$2"; shift 2;;          # e.g. 10.0.0.50/24
+    --gateway) _need_value "$@"; GATEWAY="$2"; shift 2;;
+    --memory) _need_value "$@"; MEMORY="$2"; shift 2;;
+    --disk) _need_value "$@"; DISK="$2"; shift 2;;
     --allow-ceph-storage) ALLOW_CEPH_STORAGE=1; shift;;
-    *) echo "Unknown option: $1"; exit 1;;
+    -h|--help) usage; exit 0;;
+    *) echo "Unknown option: $1 (see --help)"; exit 1;;
   esac
 done
 
@@ -135,9 +176,16 @@ else
   echo ">> Storage picked automatically: $STORAGE"
 fi
 
-# Secure the template storage (content 'vztmpl') the same way.
-if ! grep -qx "$TEMPLATE_STORAGE" <<<"$(_storages_for vztmpl)"; then
-  _new_tmpl="$(_storages_for vztmpl | head -n1)"
+# Secure the template storage (content 'vztmpl') the same way. Only the default falls
+# back on its own: a storage named with --template-storage is the user's choice, and
+# quietly downloading somewhere else would be the surprise --storage avoids as well.
+TMPL_STORAGES="$(_storages_for vztmpl)"
+if ! grep -qx "$TEMPLATE_STORAGE" <<<"$TMPL_STORAGES"; then
+  if [[ "$TEMPLATE_STORAGE_GIVEN" -eq 1 ]]; then
+    echo "Storage '$TEMPLATE_STORAGE' does not exist or cannot hold templates (content 'vztmpl')."
+    echo "Available: $(echo $TMPL_STORAGES)"; exit 1
+  fi
+  _new_tmpl="$(head -n1 <<<"$TMPL_STORAGES")"
   [[ -n "$_new_tmpl" ]] || { echo "No storage with content 'vztmpl' found for the template."; exit 1; }
   echo ">> Template storage '$TEMPLATE_STORAGE' not usable, using '$_new_tmpl'."
   TEMPLATE_STORAGE="$_new_tmpl"
