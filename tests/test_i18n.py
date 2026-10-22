@@ -1,6 +1,6 @@
 """UI i18n consistency checks (regex-based, no JS engine needed).
 
-Enforces: en.js and de.js define identical key sets, no duplicate keys, and every
+Enforces: all dictionaries define identical key sets, no duplicate keys, and every
 key referenced from index.html (data-i18n* attributes) or app.js (literal t() calls)
 exists in the English dictionary. Dynamic keys built at runtime ("theme." + mode,
 "state.engine." + s, ...) are covered by the key-set checks on the dictionaries.
@@ -18,23 +18,28 @@ T_CALL_RE = re.compile(r"""(?<![A-Za-z0-9_$])t\(\s*["']([^"']+)["']""")
 # data-i18n, data-i18n-html, data-i18n-title, data-i18n-placeholder in index.html.
 ATTR_RE = re.compile(r'data-i18n(?:-[a-z]+)*="([^"]+)"')
 
+# All shipped UI dictionaries; a new language joins the checks by joining this tuple.
+DICTS = ("en.js", "de.js", "it.js")
+
 
 def dict_keys(fname: str) -> list[str]:
     return KEY_RE.findall((WEB / "i18n" / fname).read_text(encoding="utf-8"))
 
 
 def test_dictionaries_have_no_duplicate_keys():
-    for fname in ("en.js", "de.js"):
+    for fname in DICTS:
         keys = dict_keys(fname)
         dupes = {k for k in keys if keys.count(k) > 1}
         assert not dupes, f"{fname}: duplicate keys {sorted(dupes)}"
 
 
 def test_dictionary_key_sets_are_identical():
-    en, de = set(dict_keys("en.js")), set(dict_keys("de.js"))
-    assert en == de, (
-        f"missing in de.js: {sorted(en - de)}; missing in en.js: {sorted(de - en)}"
-    )
+    en = set(dict_keys("en.js"))
+    for fname in DICTS[1:]:
+        keys = set(dict_keys(fname))
+        assert en == keys, (
+            f"missing in {fname}: {sorted(en - keys)}; missing in en.js: {sorted(keys - en)}"
+        )
 
 
 def test_index_html_keys_exist_in_english_dictionary():
@@ -54,11 +59,13 @@ def test_placeholders_match_between_languages():
         text = (WEB / "i18n" / fname).read_text(encoding="utf-8")
         return {k: set(ph_re.findall(rest)) for k, rest in line_re.findall(text)}
 
-    en, de = placeholders("en.js"), placeholders("de.js")
-    for key in en.keys() & de.keys():
-        assert en[key] == de[key], (
-            f"{key}: placeholders differ (en={sorted(en[key])}, de={sorted(de[key])})"
-        )
+    en = placeholders("en.js")
+    for fname in DICTS[1:]:
+        other = placeholders(fname)
+        for key in en.keys() & other.keys():
+            assert en[key] == other[key], (
+                f"{key}: placeholders differ (en={sorted(en[key])}, {fname}={sorted(other[key])})"
+            )
 
 
 def test_app_js_keys_exist_in_english_dictionary():
@@ -70,12 +77,12 @@ def test_app_js_keys_exist_in_english_dictionary():
 
 
 def _both_dictionaries_define(prefix: str, names) -> list[str]:
-    en, de = set(dict_keys("en.js")), set(dict_keys("de.js"))
-    return [f"{prefix}{n}" for n in names if f"{prefix}{n}" not in en or f"{prefix}{n}" not in de]
+    dicts = [set(dict_keys(f)) for f in DICTS]
+    return [f"{prefix}{n}" for n in names if any(f"{prefix}{n}" not in d for d in dicts)]
 
 
 def test_probe_status_keys_exist_in_both_dictionaries():
-    """Every per-object probe status the backend can emit needs a UI label in EN and DE."""
+    """Every per-object probe status the backend can emit needs a UI label in every dictionary."""
     from app.ups import PROBE_STATUSES
 
     missing = _both_dictionaries_define("probe.st.", PROBE_STATUSES)
@@ -83,7 +90,7 @@ def test_probe_status_keys_exist_in_both_dictionaries():
 
 
 def test_cluster_probe_status_keys_exist_in_both_dictionaries():
-    """Every per-endpoint outcome of the cluster check needs a UI label in EN and DE."""
+    """Every per-endpoint outcome of the cluster check needs a UI label in every dictionary."""
     from app.cluster import CLUSTER_PROBE_STATUSES
 
     missing = _both_dictionaries_define("cprobe.st.", CLUSTER_PROBE_STATUSES)
@@ -91,7 +98,7 @@ def test_cluster_probe_status_keys_exist_in_both_dictionaries():
 
 
 def test_node_state_keys_exist_in_both_dictionaries():
-    """Every node-name verdict needs a UI label in EN and DE.
+    """Every node-name verdict needs a UI label in every dictionary.
 
     The dashboard shows a chip for the three states that mean "does not match this API";
     the other two exist so the closed set stays labelled, exactly like the probe statuses.
@@ -111,7 +118,7 @@ def test_probe_trigger_keys_exist_in_both_dictionaries():
 
 
 def test_source_type_keys_exist_in_both_dictionaries():
-    """Every UPS source type needs a label in EN and DE (wizard dropdown + dashboard)."""
+    """Every UPS source type needs a label in every dictionary (wizard dropdown + dashboard)."""
     from app.config import UPS_SOURCE_MODELS, UpsSourceType
 
     kinds = [t.value for t in UpsSourceType]
@@ -148,7 +155,7 @@ def test_manual_deep_links_resolve_in_both_manuals():
 
 
 def test_host_type_keys_exist_in_both_dictionaries():
-    """Every shutdown target type needs a label + a help line in EN and DE."""
+    """Every shutdown target type needs a label + a help line in every dictionary."""
     from app.config import TARGET_MODELS, HostType
 
     kinds = [t.value for t in HostType]
@@ -168,7 +175,7 @@ def test_host_type_keys_exist_in_both_dictionaries():
 
 
 def test_snmp_mib_keys_exist_in_both_dictionaries():
-    """Every selectable MIB needs a label in EN and DE (wizard dropdown + dashboard)."""
+    """Every selectable MIB needs a label in every dictionary (wizard dropdown + dashboard)."""
     from app.ups import PROFILES
     from app.config import SnmpMib
 
@@ -213,7 +220,7 @@ def _js_option_values(const_name: str) -> list[str]:
 
 
 def test_webhook_format_keys_exist_in_both_dictionaries():
-    """Every payload format needs a renderer, a dropdown entry and labels in EN and DE."""
+    """Every payload format needs a renderer, a dropdown entry and labels in every dictionary."""
     from app.config import WebhookFormat
     from app.notify import FORMATTERS
 
