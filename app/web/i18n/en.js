@@ -1,7 +1,7 @@
 "use strict";
 // English UI dictionary (the default and fallback language).
 // Keys are flat and grouped by prefix; values may contain {name} placeholders.
-// Keep en.js and de.js key sets identical — tests/test_i18n.py enforces this.
+// Keep the key sets of all dictionaries (en.js, de.js, it.js) identical — tests/test_i18n.py enforces this.
 // Copyright 2026 Florian Finder
 
 window.I18N = window.I18N || {};

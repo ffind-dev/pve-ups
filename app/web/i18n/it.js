@@ -94,11 +94,11 @@ I18N.it = {
   "common.yes": "sì",
   "common.no": "no",
   "common.beta": "Beta",
-  "mode.armed": "ATTIVO",
+  "mode.armed": "ARMATO",
 
   // UPS status cards (dashboard)
   "ups.incomplete": "incompleto",
-  "ups.incompleteTitle": "Questo UPS è salvato senza {what}, quindi non viene mai interrogato e risulta permanentemente irraggiungibile. Essendo fail-safe, questo significa anche che a ogni host che alimenta viene rifiutato lo spegnimento. Completalo in Impostazioni -> UPS.",
+  "ups.incompleteTitle": "Questo UPS è salvato in modo incompleto ({what}), quindi non viene mai interrogato e risulta permanentemente irraggiungibile. Essendo fail-safe, questo significa anche che a ogni host che alimenta viene rifiutato lo spegnimento. Completalo in Impostazioni -> UPS.",
   "ups.srcMains": "Rete",
   "ups.srcBattery": "Batteria",
   "ups.tipUnreach": "irraggiungibile",
@@ -142,7 +142,7 @@ I18N.it = {
   // dashboard hosts table
   "hosts.staleFeed": "nessun UPS",
   "hosts.incomplete": "incompleto",
-  "hosts.incompleteTitle": "Questo host è salvato senza {what}, quindi uno spegnimento non può raggiungerlo — e questo si scopre solo durante un blackout. Completalo, o deseleziona “attivo”, in Impostazioni -> Host.",
+  "hosts.incompleteTitle": "Questo host è salvato in modo incompleto ({what}), quindi uno spegnimento non può raggiungerlo — e questo si scopre solo durante un blackout. Completalo, o deseleziona “attivo”, in Impostazioni -> Host.",
   "hosts.staleFeedTitle": "Questo host è assegnato a UPS che non esistono più ({ids}). A meno che non gli resti un'altra alimentazione, non verrà mai spento. Correggilo in Impostazioni -> Host.",
   "hosts.allUps": "tutti gli UPS",
   "hosts.policyAnd": "AND",
@@ -184,7 +184,7 @@ I18N.it = {
   // settings: operating mode
   "wiz.mode": "Modalità operativa",
   "wiz.dryRun": "Dry-run (registra soltanto, non spegne nulla)",
-  "wiz.dryRunTitle": "Interruttore di sicurezza principale. Quando è attivo, l'engine registra soltanto ciò che farebbe e non spegne nulla. Disattivalo (“attivo”) solo dopo aver testato la configurazione.",
+  "wiz.dryRunTitle": "Interruttore di sicurezza principale. Quando è attivo, l'engine registra soltanto ciò che farebbe e non spegne nulla. Disattivalo (“armato”) solo dopo aver testato la configurazione.",
 
   // settings: UPS devices
   "wiz.ups": "Dispositivi UPS",

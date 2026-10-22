@@ -305,8 +305,9 @@ unterscheiden sich von Proxmox VE und erklären die Befehle oben:
   NUT-Variable, falsche Zugangsdaten und blockierter Port auf einen Blick unterscheidbar
   sind. Er benennt außerdem die Auslöser, die das Gerät gar nicht bedienen kann — so
   bleibt keine Schwelle stillschweigend wirkungslos.
-- **Zweisprachige Oberfläche**: Englisch (Standard) und Deutsch, automatisch passend
-  zur Browsersprache; eingebautes Benutzerhandbuch (beide Sprachen).
+- **Mehrsprachige Oberfläche**: Englisch (Standard), Deutsch und Italienisch, automatisch
+  passend zur Browsersprache; eingebautes Benutzerhandbuch (Englisch und Deutsch — die
+  italienische Oberfläche verweist auf das englische).
 - **Schwellen-Overrides je USV** zusätzlich zu den globalen Standardwerten.
 - **Reiter „Verlauf“**: Restlaufzeit, Last und Ladung jeder USV im Zeitverlauf (1 Stunde
   bis 90 Tage oder frei gewählter Beginn und frei gewähltes Ende), mit Ausfällen, Auslösern und Nicht-Erreichbarkeit als farbigen Bändern,

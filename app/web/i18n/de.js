@@ -1,6 +1,6 @@
 "use strict";
 // German UI dictionary.
-// Keep en.js and de.js key sets identical — tests/test_i18n.py enforces this.
+// Keep the key sets of all dictionaries (en.js, de.js, it.js) identical — tests/test_i18n.py enforces this.
 // "USV" stays the correct German term for the device; the product name is PVE-UPS.
 // Copyright 2026 Florian Finder
 

@@ -25,7 +25,8 @@ def test_index_is_never_stored():
 
 def test_index_stamps_every_local_script_and_stylesheet():
     body = client.get("/").text
-    for asset in ("/app.js", "/style.css", "/i18n.js", "/i18n/en.js", "/i18n/de.js"):
+    for asset in ("/app.js", "/style.css", "/i18n.js", "/i18n/en.js", "/i18n/de.js",
+                  "/i18n/it.js"):
         assert re.search(re.escape(asset) + r"\?v=[0-9a-f]+", body), asset
     # Plain links must stay untouched - the manuals are served with revalidation.
     assert '"/manual.html?v=' not in body

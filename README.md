@@ -289,8 +289,9 @@ from Proxmox VE and explain the commands above:
   the UPS test breaks its result down per object, so a missing OID or NUT variable, wrong
   credentials and a blocked port are told apart at a glance. It also names the trigger
   conditions the device cannot feed at all, so no threshold is left silently dead.
-- **Bilingual UI**: English (default) and German, picked automatically from the browser
-  language; user manual built in (both languages).
+- **Multilingual UI**: English (default), German and Italian, picked automatically from
+  the browser language; user manual built in (English and German — the Italian UI links
+  to the English one).
 - Per-UPS **threshold overrides** on top of the global defaults.
 - **History tab**: remaining runtime, load and charge of every UPS over time (1 hour to
   90 days, or any start and end you pick), with outages, triggers and unreachable stretches as coloured bands, event-log

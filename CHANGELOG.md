@@ -10,6 +10,11 @@ reads it dynamically. On every release: bump `__version__` **and** add a section
 
 ## [Unreleased]
 
+### Added
+
+- Italian UI translation, picked automatically for Italian browsers (thanks @paki81, #48).
+  The user manual stays English and German; the Italian UI links to the English manual.
+
 ## [4.3.0] - 2026-10-10
 
 A feature release from GitHub issue reports: a history of every UPS, the cluster-wide guest
