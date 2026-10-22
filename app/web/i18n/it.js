@@ -6,7 +6,7 @@
 
 window.I18N = window.I18N || {};
 I18N.it = {
-  "manual.file": "manual.html",
+  "manual.file": "manuale.html",
 
   // topbar / navigation
   "nav.dashboard": "Dashboard",

@@ -1,0 +1,1797 @@
+<!DOCTYPE html>
+<!-- Copyright 2026 Florian Finder -->
+<!-- Manuale utente PVE-UPS (italiano) — file HTML autonomo, utilizzabile offline.
+     Apribile direttamente (file://) o tramite l'icona ? nella web UI.
+     Lo styling è volutamente INLINE (variabili tema copiate da style.css) così il file
+     funziona da solo. In caso di modifiche all'UI mantenere tema/changelog allineati qui E in
+     manual.html / handbuch.html; gli id delle ancore dei file devono restare identici
+     (deep link dalla web UI). -->
+<html lang="it" data-theme="auto">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PVE-UPS — Manuale utente</title>
+  <style>
+    /* ---- Theme (copied from app/web/style.css) ---- */
+    :root {
+      --bg: #0b1220; --surface: #131c2b; --surface-2: #1b2536;
+      --border: #283449; --border-strong: #3a4866;
+      --text: #e6edf6; --text-muted: #97a4b8; --text-faint: #6b7890;
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 12px 28px -16px rgba(0,0,0,.6);
+      --ok: #34d399;   --ok-soft: rgba(52,211,153,.14);  --ok-bd: rgba(52,211,153,.38);
+      --warn: #fbbf24; --warn-soft: rgba(251,191,36,.14); --warn-bd: rgba(251,191,36,.38);
+      --crit: #f87171; --crit-soft: rgba(248,113,113,.15); --crit-bd: rgba(248,113,113,.4);
+      --info: #60a5fa; --info-soft: rgba(96,165,250,.14); --info-bd: rgba(96,165,250,.38);
+      --r-sm: 6px; --r: 10px; --r-lg: 14px; --r-pill: 999px; --maxw: 1120px;
+    }
+    :root[data-theme="light"] {
+      --bg: #f4f6fb; --surface: #ffffff; --surface-2: #f1f4f9;
+      --border: #e1e7f0; --border-strong: #c6d0e0;
+      --text: #16202e; --text-muted: #57637a; --text-faint: #8893a6;
+      --shadow: 0 1px 2px rgba(16,24,40,.06), 0 14px 28px -18px rgba(16,24,40,.22);
+      --ok: #059669;   --ok-soft: rgba(5,150,105,.12);  --ok-bd: rgba(5,150,105,.32);
+      --warn: #b45309; --warn-soft: rgba(217,119,6,.14); --warn-bd: rgba(217,119,6,.32);
+      --crit: #dc2626; --crit-soft: rgba(220,38,38,.1);  --crit-bd: rgba(220,38,38,.3);
+      --info: #2563eb; --info-soft: rgba(37,99,235,.1);  --info-bd: rgba(37,99,235,.3);
+    }
+    @media (prefers-color-scheme: light) {
+      :root[data-theme="auto"] {
+        --bg: #f4f6fb; --surface: #ffffff; --surface-2: #f1f4f9;
+        --border: #e1e7f0; --border-strong: #c6d0e0;
+        --text: #16202e; --text-muted: #57637a; --text-faint: #8893a6;
+        --shadow: 0 1px 2px rgba(16,24,40,.06), 0 14px 28px -18px rgba(16,24,40,.22);
+        --ok: #059669;   --ok-soft: rgba(5,150,105,.12);  --ok-bd: rgba(5,150,105,.32);
+        --warn: #b45309; --warn-soft: rgba(217,119,6,.14); --warn-bd: rgba(217,119,6,.32);
+        --crit: #dc2626; --crit-soft: rgba(220,38,38,.1);  --crit-bd: rgba(220,38,38,.3);
+        --info: #2563eb; --info-soft: rgba(37,99,235,.1);  --info-bd: rgba(37,99,235,.3);
+      }
+    }
+
+    /* ---- Base ---- */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text);
+      font-size: 14px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--info); }
+    code {
+      background: var(--surface-2); color: var(--text);
+      padding: 1px 6px; border-radius: var(--r-sm); font-size: .92em;
+      border: 1px solid var(--border);
+    }
+    pre {
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: var(--r); padding: 12px 14px; overflow-x: auto; font-size: 12.5px;
+      line-height: 1.5;
+    }
+    pre code { background: none; border: none; padding: 0; }
+    .muted { color: var(--text-muted); }
+
+    /* ---- Topbar (like the web UI) ---- */
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; gap: 14px;
+      padding: 10px 20px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: .2px; }
+    .brand .mark { width: 24px; height: 24px; color: var(--text); }
+    .brand .sub { font-size: 12px; font-weight: 500; color: var(--text-faint); }
+    .spacer { flex: 1 1 auto; }
+    .icon { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor;
+            stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-lg { width: 22px; height: 22px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
+      background: transparent; color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--r-sm);
+      padding: 6px 12px; font-size: 13px; font-weight: 550; cursor: pointer;
+      transition: background .12s, border-color .12s;
+    }
+    .btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
+
+    /* ---- Layout: TOC + content ---- */
+    .wrap {
+      max-width: var(--maxw); margin: 22px auto 40px; padding: 0 18px;
+      display: grid; grid-template-columns: 230px 1fr; gap: 28px; align-items: start;
+    }
+    nav.toc {
+      position: sticky; top: 70px; align-self: start;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r-lg); padding: 14px; box-shadow: var(--shadow);
+      font-size: 13px;
+    }
+    nav.toc h2 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase;
+                 letter-spacing: .5px; color: var(--text-faint); }
+    nav.toc ol { list-style: none; margin: 0; padding: 0; counter-reset: toc; }
+    nav.toc li { counter-increment: toc; margin: 2px 0; }
+    nav.toc a { display: block; padding: 5px 8px; border-radius: var(--r-sm);
+                color: var(--text-muted); text-decoration: none; }
+    nav.toc a::before { content: counter(toc) ". "; color: var(--text-faint); }
+    nav.toc a:hover { background: var(--surface-2); color: var(--text); }
+
+    main { min-width: 0; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
+      padding: 22px 24px; margin-bottom: 18px; box-shadow: var(--shadow);
+    }
+    .card.intro { background: var(--surface-2); }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    h2.sec { font-size: 17px; margin: 0 0 14px; display: flex; align-items: baseline; gap: 10px; }
+    h2.sec .n {
+      display: inline-grid; place-items: center; min-width: 24px; height: 24px;
+      border-radius: 7px; background: var(--surface-2); border: 1px solid var(--border);
+      font-size: 12px; color: var(--text-muted); font-weight: 700;
+    }
+    h3 { font-size: 14px; margin: 18px 0 8px; }
+    p { margin: 8px 0; }
+    ul, ol.steps { margin: 8px 0; padding-left: 22px; }
+    li { margin: 4px 0; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border);
+             vertical-align: top; }
+    thead th { color: var(--text-muted); font-weight: 600; font-size: 12px;
+               border-bottom: 1px solid var(--border-strong); }
+    tbody tr:last-child td { border-bottom: none; }
+
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px;
+            border-radius: var(--r-pill); font-size: 12px; font-weight: 650;
+            border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); }
+    .pill.ok   { color: var(--ok);   background: var(--ok-soft);   border-color: var(--ok-bd); }
+    .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
+    .pill.crit { color: var(--crit); background: var(--crit-soft); border-color: var(--crit-bd); }
+
+    .callout { display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--r);
+               margin: 14px 0; font-size: 13px; border: 1px solid var(--border);
+               background: var(--surface-2); }
+    .callout.info { color: var(--info); background: var(--info-soft); border-color: var(--info-bd); }
+    .callout.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
+    .callout b { color: inherit; }
+
+    .cl-ver { font-weight: 700; margin: 16px 0 4px; }
+    .cl-ver .date { font-weight: 500; color: var(--text-faint); font-size: 12px; margin-left: 8px; }
+
+    footer { max-width: var(--maxw); margin: 24px auto 36px; padding: 0 18px;
+             color: var(--text-faint); font-size: 12px; text-align: center; }
+
+    @media (max-width: 820px) {
+      .wrap { grid-template-columns: 1fr; }
+      nav.toc { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">
+      <svg class="mark icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3z"/></svg>
+      PVE-UPS <span class="sub">Manuale utente · v4.3.0</span>
+    </span>
+    <span class="spacer"></span>
+    <a class="btn" href="https://github.com/ffind-dev/pve-ups" target="_blank"
+       rel="noopener" title="Progetto su GitHub">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.9a3.4 3.4 0 0 0-.9-2.6c3-.3 6.2-1.5 6.2-6.7A5.2 5.2 0 0 0 20 5.3a4.9 4.9 0 0 0-.1-3.6s-1.1-.3-3.6 1.4a12.3 12.3 0 0 0-6.6 0C7.2 1.4 6.1 1.7 6.1 1.7A4.9 4.9 0 0 0 6 5.3 5.2 5.2 0 0 0 4.6 8.8c0 5.2 3.2 6.4 6.2 6.7a3.4 3.4 0 0 0-.9 2.6V22"/></svg>
+      <span>GitHub</span>
+    </a>
+    <button id="themeBtn" class="btn" type="button" title="Cambia tema">
+      <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      <span id="themeLbl">Auto</span>
+    </button>
+  </header>
+
+  <div class="wrap">
+    <nav class="toc">
+      <h2>Indice</h2>
+      <ol>
+        <li><a href="#was">Cos'è PVE-UPS?</a></li>
+        <li><a href="#voraussetzungen">Requisiti</a></li>
+        <li><a href="#installation">Installazione e configurazione</a></li>
+        <li><a href="#token">Token API (VE e Backup Server)</a></li>
+        <li><a href="#snmp">Sorgenti UPS</a></li>
+        <li><a href="#logik">Come funziona e logica</a></li>
+        <li><a href="#failsafe">Fail-safe e casi limite</a></li>
+        <li><a href="#ausloeser">Trigger e soglie</a></li>
+        <li><a href="#monitoring">Monitoraggio / REST</a></li>
+        <li><a href="#updates">Aggiornamenti e funzionamento</a></li>
+        <li><a href="#faq">Risoluzione problemi</a></li>
+        <li><a href="#changelog">Changelog</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <div class="card intro">
+        <h1>PVE-UPS — Manuale utente</h1>
+        <p class="muted">Un'appliance snella per lo spegnimento da UPS per Proxmox VE: monitora uno o
+        più UPS — via SNMP o tramite un server NUT — e, in caso di blackout, spegne
+        in modo ordinato gli host Proxmox assegnati, senza file di configurazione scritti
+        a mano da nessuna parte. Questo manuale è rivolto ad amministratori con mentalità
+        tecnica che sono nuovi al prodotto.</p>
+      </div>
+
+      <section class="card" id="was">
+        <h2 class="sec"><span class="n">1</span> Cos'è PVE-UPS?</h2>
+        <p>PVE-UPS sostituisce le classiche appliance di spegnimento UPS legate al produttore (come APC
+        PowerChute Network Shutdown) per ambienti Proxmox. Il software gira come un singolo
+        <b>LXC unprivileged</b> (~256&nbsp;MB RAM) e non richiede altro che uno script di installazione.</p>
+        <h3>Funzionalità principali</h3>
+        <ul>
+          <li>Monitoraggio di <b>uno o più UPS</b> — con scheda di rete SNMP
+          (standard RFC&nbsp;1628 <i>o</i> un MIB del produttore: APC PowerNet, CyberPower,
+          <b>SNMP v1/v2c/v3</b>, implementazione in puro Python) o tramite un <b>server NUT</b>,
+          che è il modo in cui si leggono gli UPS USB e seriali.</li>
+          <li>Spegnimento ordinato degli host tramite <b>token API Proxmox</b> — nessun accesso
+          root via SSH. I target possono essere nodi <b>Proxmox VE</b> (privilegio
+          <code>Sys.PowerMgmt</code>) o un <b>Proxmox Backup Server</b>
+          (<code>Sys.PowerManagement</code>), selezionabile per host.</li>
+          <li><b>Mappatura host↔UPS</b> con logica per host (AND/OR) per alimentatori
+          ridondanti o carico separato, con diagramma dell'alimentazione nella web UI.</li>
+          <li>Configurazione completa tramite <b>procedura guidata web</b> con pulsanti di test.</li>
+          <li>Web UI in <b>inglese, tedesco e italiano</b> — scelta automaticamente dalla lingua
+          del browser.</li>
+          <li><b>Fail-safe:</b> perdere il contatto con l'UPS genera un allarme di default,
+          non spegne mai nulla.</li>
+          <li><b>Modalità dry-run</b> per una messa in servizio senza rischi.</li>
+          <li><b>Stato REST/JSON</b> in sola lettura per il monitoraggio (<code>/api/status</code>,
+          <code>/api/health</code>).</li>
+        </ul>
+      </section>
+
+      <section class="card" id="voraussetzungen">
+        <h2 class="sec"><span class="n">2</span> Requisiti</h2>
+        <ul>
+          <li>Un host <b>Proxmox VE</b> su cui far girare l'LXC. Tipicamente uno degli host da
+          proteggere. Come target funzionano sia host standalone sia nodi di un cluster — ogni
+          host viene spento singolarmente tramite la propria API, e PVE-UPS non tocca né
+          l'HA manager né il quorum.</li>
+          <li>Uno o più UPS, raggiungibili in uno di due modi:
+            <ul>
+              <li>con una <b>scheda di rete SNMP</b> che espone lo standard
+              <b>RFC 1628 UPS MIB</b> (indipendente dal produttore) o un <b>MIB del produttore</b>
+              supportato — APC PowerNet o CyberPower, che coprono anche le schede senza RFC 1628 (vedi
+              <a href="#snmp">sezione 5</a>), oppure</li>
+              <li>collegato via <b>cavo USB o seriale</b> a una macchina che esegue un
+              <b>server NUT</b> (<code>upsd</code>) — vedi sezione 5.</li>
+            </ul>
+          </li>
+          <li>Connettività di rete tra l'appliance e la sorgente UPS (basta l'accesso in
+          lettura: UDP 161 per SNMP, TCP 3493 per NUT) e verso l'API dei target
+          protetti (HTTPS, porta 8006 per Proxmox VE, 8007 per Proxmox Backup Server).</li>
+        </ul>
+        <p>Oltre ai nodi Proxmox VE, si può spegnere anche un <b>Proxmox Backup Server</b> —
+        ogni voce host porta un tipo. I due differiscono solo in come vengono
+        indirizzati; tutto il resto (mappatura UPS, logica AND/OR, ordine, soglie) funziona
+        allo stesso modo per entrambi. Vedi <a href="#token">sezione 4</a>.</p>
+        <div class="callout warn">
+          <span><b>PVE-UPS va su una rete interna (di management).</b> Contiene token
+          API che possono spegnere server, quindi trattalo come qualsiasi altro strumento di
+          management: raggiungibile solo da reti fidate, mai esposto a internet, e dietro
+          lo stesso firewalling, segmentazione e controllo accessi delle interfacce web
+          di Proxmox stesse. La web UI è protetta da password, ma
+          <code>/api/status</code> e <code>/api/health</code> sono volutamente leggibili
+          senza login affinché il monitoraggio possa interrogarli — un motivo in più per cui
+          l'appliance non dovrebbe essere raggiungibile pubblicamente.</span>
+        </div>
+      </section>
+
+      <section class="card" id="installation">
+        <h2 class="sec"><span class="n">3</span> Installazione e configurazione</h2>
+        <p>Installa direttamente dalla <b>shell del nodo Proxmox</b> (web UI → nodo →
+        <code>&gt;_ Shell</code>, come root). Lo script scarica l'ultimo pacchetto di release
+        da GitHub, lo scompatta e crea l'LXC:</p>
+<pre><code>bash -c "$(curl -fsSL https://github.com/ffind-dev/pve-ups/releases/latest/download/install.sh)"
+# ad es. con un IP statico:
+curl -fsSL https://github.com/ffind-dev/pve-ups/releases/latest/download/install.sh | bash -s -- \
+  --ctid 950 --ip 10.0.0.50/24 --gateway 10.0.0.1 --hostname pve-usv</code></pre>
+        <p>Tutte le opzioni sono facoltative; <code>--help</code> le elenca con i default
+        (come one-liner: <code>… | bash -s -- --help</code>).</p>
+        <table>
+          <thead><tr><th>Opzione</th><th>Default</th><th>Significato</th></tr></thead>
+          <tbody>
+            <tr><td><code>--ctid &lt;id&gt;</code></td><td><code>950</code></td>
+            <td>ID del nuovo container</td></tr>
+            <tr><td><code>--hostname &lt;name&gt;</code></td><td><code>pve-usv</code></td>
+            <td>Hostname del container</td></tr>
+            <tr><td><code>--storage &lt;name&gt;</code></td><td>automatico</td>
+            <td>Storage per il disco del container (content <code>rootdir</code>). Senza:
+            <code>local-lvm</code>, poi <code>local-zfs</code>, poi il primo altro
+            storage non-Ceph</td></tr>
+            <tr><td><code>--template-storage &lt;name&gt;</code></td><td><code>local</code></td>
+            <td>Storage su cui viene scaricato il template Debian 12 (content
+            <code>vztmpl</code>). Il default ripiega su un altro storage adatto; uno
+            esplicito viene rifiutato se non può contenere template</td></tr>
+            <tr><td><code>--bridge &lt;bridge&gt;</code></td><td><code>vmbr0</code></td>
+            <td>Bridge di rete</td></tr>
+            <tr><td><code>--ip &lt;dhcp|indirizzo/cidr&gt;</code></td><td><code>dhcp</code></td>
+            <td><code>dhcp</code> o un indirizzo statico come <code>10.0.0.50/24</code></td></tr>
+            <tr><td><code>--gateway &lt;ip&gt;</code></td><td>–</td>
+            <td>Gateway di default, usato solo con <code>--ip</code> statico</td></tr>
+            <tr><td><code>--memory &lt;MB&gt;</code></td><td><code>256</code></td>
+            <td>RAM del container</td></tr>
+            <tr><td><code>--disk &lt;GB&gt;</code></td><td><code>4</code></td>
+            <td>Dimensione del disco del container</td></tr>
+            <tr><td><code>--allow-ceph-storage</code></td><td>off</td>
+            <td>Accetta uno <code>--storage</code> basato su Ceph — vedi
+            <a href="#cluster-selfguest">il guest proprio dell'appliance</a></td></tr>
+          </tbody>
+        </table>
+        <p>PVE-UPS è elencato anche su <a href="https://community-scripts.org/"
+        target="_blank" rel="noopener">community-scripts.org</a> (cerca “PVE-UPS”), una
+        raccolta mantenuta dalla community di script di supporto per Proxmox. Il one-liner
+        sopra resta il percorso di riferimento.</p>
+        <p>Poi apri la web UI su <code>http://&lt;container-ip&gt;:8080</code> e segui
+        la procedura guidata:</p>
+        <ol class="steps">
+          <li>Imposta la password dell'UI.</li>
+          <li>Aggiungi gli <b>UPS</b> (sorgente, indirizzo, credenziali — vedi sezione 5) e
+          verifica ciascuno con “Test UPS”.</li>
+          <li>Aggiungi gli <b>host</b>: scegli il <b>tipo</b> per ogni voce (Proxmox VE o Proxmox
+          Backup Server), inserisci il suo token API (vedi sezione 4) e usa “Test”. Definisci quali
+          UPS alimentano ogni host e con quale logica (AND/OR).</li>
+          <li>Imposta le <b>soglie</b> o mantieni i default.</li>
+          <li>Opzionalmente configura il <b>webhook di notifica</b> (HTTP POST verso un
+          sistema di ticket/chat/monitoraggio): scegli formato e livello, poi verificalo con
+          “Invia notifica di test” — vedi <a href="#webhook">Notifiche webhook</a>.</li>
+        </ol>
+        <div class="callout info">
+          <span>Mentre il <b>dry-run</b> è attivo nulla viene spento — ideale per i test.
+          Solo quando tutto torna, disattiva il dry-run (modalità “ATTIVO”).</span>
+        </div>
+        <div class="callout warn">
+          <span>Se l'LXC gira su uno degli host protetti, marca quell'host come
+          <b>“Questo host”</b> nella lista host — così è garantito che si spenga per ultimo.</span>
+        </div>
+      </section>
+
+      <section class="card" id="token">
+        <h2 class="sec"><span class="n">4</span> Creare il token API</h2>
+        <p>Ogni voce host si autentica con un token API — revocabile, e sostituto
+        dell'accesso root via SSH. Quale token creare dipende dal <b>tipo</b> selezionato
+        per quella voce, perché Proxmox VE e Proxmox Backup Server usano schemi di token
+        e nomi di privilegio diversi:</p>
+        <table>
+          <thead><tr><th></th><th>Proxmox VE</th><th>Proxmox Backup Server</th></tr></thead>
+          <tbody>
+            <tr><td>Porta API</td><td>8006</td><td>8007</td></tr>
+            <tr><td>Privilegio</td><td><code>Sys.PowerMgmt</code></td>
+            <td><code>Sys.PowerManagement</code></td></tr>
+            <tr><td>Concesso su</td><td><code>/nodes</code></td>
+            <td><code>/system/status</code></td></tr>
+            <tr><td>Campo “Nodo”</td><td>il vero nome del nodo</td>
+            <td>un'etichetta libera (PBS lo ignora)</td></tr>
+          </tbody>
+        </table>
+        <div class="callout warn">
+          <span>Scegliere il tipo sbagliato è la causa più comune di un test fallito: un
+          Backup Server inserito come “Proxmox VE” rifiuta la richiesta e riporta
+          <i>“Authentication failed (token invalid?)”</i>, anche se il token stesso è
+          perfettamente valido.</span>
+        </div>
+
+        <h3 id="token-pve">Proxmox VE</h3>
+        <p>Crea un utente dedicato con il solo privilegio di power-management e un token
+        API. Esegui <b>una sola volta</b>, nella shell di un qualsiasi nodo Proxmox:</p>
+<pre><code>pveum user add ups@pve
+pveum role add UpsShutdown -privs "Sys.PowerMgmt"
+pveum acl modify /nodes -user ups@pve -role UpsShutdown
+pveum user token add ups@pve shutdown --privsep 0</code></pre>
+        <p>L'ultimo comando stampa il <b>token ID</b> (<code>ups@pve!shutdown</code>) e
+        il <b>segreto</b>. Inserisci entrambi nella procedura guidata e verifica con “Test”.</p>
+        <div class="callout info">
+          <span><b>In un cluster i comandi si eseguono una sola volta.</b> Utenti, token API e
+          ACL vivono a livello datacenter (<code>/etc/pve</code>) e valgono quindi su
+          ogni nodo — inserisci lo <i>stesso</i> token ID e segreto per ogni nodo. Solo gli
+          host standalone che non condividono un cluster hanno bisogno ognuno di un proprio
+          utente e token.</span>
+        </div>
+        <p>Dai a ogni voce host <b>il proprio URL API</b>
+        (<code>https://&lt;ip-di-questo-nodo&gt;:8006</code>). L'API Proxmox farebbe da proxy
+        per una richiesta a un altro nodo, ma un nodo già spento non può fare da proxy
+        per quelli che devono ancora spegnersi.</p>
+        <div class="callout warn">
+          <span><b>Dai a ogni voce host il proprio URL API — è quello che decide dove lo
+          spegnimento arriva.</b> PVE-UPS indirizza il nodo dietro l'URL che hai inserito
+          (<code>/nodes/localhost/status</code>), quindi la macchina che risponde è quella che
+          viene spenta. Proxmox gestisce questa forma localmente invece di cercare il nodo nel
+          cluster, che è esattamente ciò che vuoi mentre i nodi cadono e il quorum è
+          traballante. La conseguenza: un “Nodo” scritto male non può più deviare uno spegnimento —
+          ma due voci che condividono un URL sì, quindi PVE-UPS avvisa di questo sia mentre
+          modifichi sia nell'auto-test.</span>
+        </div>
+        <div class="callout info">
+          <span><b>“Nodo” viene comunque controllato, perché etichetta tutto il resto.</b> È il nome
+          dell'host nella dashboard e in ogni evento, quindi un nome che non corrisponde a nessun
+          nodo rende tutto fuorviante. “Test” lo confronta con la lista dei nodi riportata
+          dall'API, ti propone quello giusto da accettare con un clic e riempie un campo vuoto.
+          Valgono le regole di Proxmox: solo lettere, cifre e <code>-</code> — niente punti, quindi un
+          FQDN come <code>pve01.example.com</code> viene rifiutato — e maiuscole/minuscole
+          sono distinte, quindi <code>PVE01</code> non è <code>pve01</code>. Dove le voci
+          condividono un URL API il nome torna nel percorso dello spegnimento, e una
+          discrepanza è riportata come errore anziché come avviso.</span>
+        </div>
+
+        <h3 id="token-pbs">Proxmox Backup Server</h3>
+        <p>Esegui questo nella shell del Backup Server. Nota che l'ACL viene concessa
+        <b>due volte</b> — una all'utente, una al token:</p>
+<pre><code>proxmox-backup-manager user create ups@pbs
+proxmox-backup-manager user generate-token ups@pbs shutdown
+proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs'
+proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdown'</code></pre>
+        <p><code>generate-token</code> stampa il <b>token ID</b>
+        (<code>ups@pbs!shutdown</code>) e il <b>segreto</b> — il segreto viene mostrato una
+        sola volta e non può essere recuperato dopo. Inserisci l'URL API come
+        <code>https://&lt;pbs-ip&gt;:8007</code>, poi verifica con “Test”.</p>
+        <p>Tre dettagli differiscono da Proxmox VE e spiegano i comandi sopra:</p>
+        <ul>
+          <li><b>Servono entrambe le voci.</b> Su PBS i permessi di un token sono calcolati
+          dalle sue ACL e poi intersecati con quelli del suo utente, quindi un token
+          non può mai superare il suo utente. Concederne solo una delle due lascia il token
+          senza il privilegio.</li>
+          <li><b>Il ruolo è <code>Admin</code>.</b> PBS non ha un ruolo granulare di
+          power-management — <code>Sys.PowerManagement</code> è posseduto solo da
+          <code>Admin</code>. Concederlo su <code>/system/status</code> invece che su
+          <code>/</code> mantiene l'ambito il più stretto possibile per PBS.</li>
+          <li><b>Il campo “Nodo” è solo un'etichetta.</b> PBS ignora il nodo nel percorso API,
+          quindi lo spegnimento indirizza sempre <code>/nodes/localhost/status</code>. Chiama la
+          voce come è leggibile sulla dashboard; nulla deve corrispondere all'hostname.</li>
+        </ul>
+        <div class="callout warn">
+          <span><b>Valuta bene se collegare qui un Backup Server.</b>
+          Il token sopra è un token <code>Admin</code>, e PVE-UPS deve raggiungere l'API
+          PBS dall'ambiente che protegge. Questa combinazione allarga il percorso da un
+          host di virtualizzazione compromesso verso i backup — che sono esattamente ciò che
+          dovrebbe sopravvivere a una tale compromissione. Per ambienti di produzione
+          <b>sconsigliamo quindi</b> di collegare PBS alla stessa istanza PVE-UPS che gestisce
+          gli host PVE. Alternative: dai al Backup Server un suo percorso di spegnimento UPS
+          (una propria istanza PVE-UPS, raggiungibile solo da un segmento di management separato), o
+          lascialo superare i blackout brevi sull'autonomia del suo UPS.</span>
+        </div>
+      </section>
+
+      <section class="card" id="snmp">
+        <h2 class="sec"><span class="n">5</span> Sorgenti UPS</h2>
+        <p>Ogni voce UPS nella procedura guidata ha un selettore <b>“Lettura via”</b>. Le due
+        sorgenti si possono mescolare liberamente in una stessa istanza, e tutto ciò che viene
+        dopo — soglie, mappatura host, regole fail-safe — è identico per entrambe.</p>
+
+        <h3>SNMP (UPS con scheda di rete)</h3>
+        <p>Nell'interfaccia web della scheda di rete dell'UPS (di solito in <i>Network → SNMPv1</i>
+        o <i>SNMPv3</i>), abilita l'accesso e concedi all'IP dell'appliance l'<b>accesso in
+        lettura</b>. Nulla viene mai scritto. Porta di default 161/UDP.</p>
+
+        <h3>Quale MIB viene letto</h3>
+        <p>Ogni UPS SNMP ha un'impostazione <b>MIB</b>. Decide quale insieme di oggetti viene
+        interrogato — i valori stessi, le soglie e tutto ciò che sta a valle sono gli stessi
+        in ogni caso.</p>
+        <ul>
+          <li><b>Automatico</b> (default, e la risposta giusta per quasi ogni dispositivo): viene
+          letto lo standard <b>RFC 1628</b>, e l'UPS passa a un MIB del produttore appena
+          risponde su quello. Il rilevamento non costa query extra, e un aggiornamento firmware
+          che aggiunge RFC 1628 in seguito viene recepito da solo.</li>
+          <li><b>RFC 1628 (standard)</b>: il MIB UPS indipendente dal produttore, nient'altro.</li>
+          <li><b>APC PowerNet</b>: il MIB delle schede di gestione di rete APC/Schneider.</li>
+          <li><b>CyberPower</b>: il CPS-MIB delle schede di rete CyberPower (famiglia RMCARD).
+          Viene letto <b>un valore per richiesta</b> — vedi sotto.</li>
+        </ul>
+        <p>Un MIB del produttore conta soprattutto per APC. Schneider supporta RFC 1628 solo sulle
+        <b>Network Management Card 2</b> (AP9630/AP9631/AP9635) dal firmware
+        <code>sumx</code>/<code>sy</code> <b>v5.1.7</b> in poi; le vecchie schede <b>NMC1</b>
+        (AP9617/AP9618/AP9619) parlano solo PowerNet e non sono leggibili attraverso lo
+        standard. Sulle schede che supportano entrambi, PowerNet resta comunque la sorgente
+        migliore: riporta l'autonomia residua in centesimi di secondo anziché in minuti interi, e
+        riporta un <b>self-test</b> come stato a sé — RFC 1628 non sa distinguere un
+        self-test da un blackout vero.</p>
+        <p>Le schede <b>CyberPower</b> per lo più implementano anch'esse RFC 1628, ma non tutte,
+        e alcuni firmware non rispondono a una richiesta di più valori insieme — non con
+        un errore, la richiesta va semplicemente in timeout — mentre ogni valore risponde se
+        interrogato da solo. Per questo il MIB CyberPower viene sempre letto un valore per
+        richiesta: qualche centinaio di millisecondi per polling su una rete locale, e una
+        scheda che smette di rispondere costa comunque un solo timeout, come prima.</p>
+        <p>Imposta il MIB esplicitamente solo per forzarne uno, ad esempio per fissare un
+        dispositivo sullo standard mentre confronti le letture — o quando “Test UPS” riporta
+        che il polling regolare non ha avuto risposta anche se i valori rispondono uno alla
+        volta. Allora scegli <b>CyberPower</b>: <b>Automatico</b> parte sempre con una
+        richiesta di più valori, a cui una scheda del genere non risponde mai.</p>
+
+        <h3>Server NUT (UPS USB e seriali)</h3>
+        <p>Un UPS senza scheda di rete si raggiunge tramite
+        <a href="https://networkupstools.org/" target="_blank" rel="noopener">Network UPS
+        Tools</a>: la macchina a cui l'UPS è collegato esegue <code>upsd</code>, e
+        PVE-UPS legge da esso su TCP&nbsp;3493. Molto spesso un server del genere esiste già —
+        i NAS Synology e QNAP hanno una casella “server UPS”, così come TrueNAS e
+        OPNsense; altrimenti va bene un Raspberry Pi o un host Proxmox con il pacchetto
+        <code>nut-server</code>.</p>
+        <p>Servono tre campi: l'<b>host</b> che esegue upsd, il <b>nome UPS</b> come
+        configurato nel suo <code>ups.conf</code> (<code>upsc -l &lt;host&gt;</code> elenca i
+        nomi disponibili), e opzionalmente <b>nome utente e password</b> — un upsd standard
+        permette di leggere le variabili senza né l'uno né l'altra.</p>
+        <h3>NAS come server NUT (QNAP, Synology)</h3>
+        <p>Entrambi i produttori forniscono una configurazione propria e fissa — i valori non
+        si possono scegliere liberamente:</p>
+        <table>
+          <thead><tr><th>NAS</th><th>Nome UPS</th><th>Utente</th><th>Password</th></tr></thead>
+          <tbody>
+            <tr><td>QNAP</td><td><code>qnapups</code></td><td><code>admin</code></td><td><code>123456</code></td></tr>
+            <tr><td>Synology</td><td><code>ups</code></td><td><code>ups</code></td><td>nessuna</td></tr>
+          </tbody>
+        </table>
+        <p>Su entrambi il server UPS di rete va abilitato <b>e l'indirizzo IP dell'appliance
+        deve essere nella lista dei dispositivi consentiti</b> — altrimenti il NAS
+        semplicemente non risponde, che è di gran lunga la causa più comune di un test
+        fallito. L'impostazione sta nella configurazione UPS (QNAP: pannello di controllo,
+        dispositivo esterno; Synology: pannello di controllo, hardware e alimentazione); la
+        dicitura esatta varia tra le versioni di QTS e DSM.</p>
+        <div class="callout info">
+          <span>PVE-UPS è un client NUT strettamente in <b>sola lettura</b>: chiede solo la
+          lista delle variabili, non invia mai comandi e non esegue mai <code>upsmon</code>. NUT
+          fa da driver del dispositivo; le soglie, la policy degli host e la decisione di
+          spegnimento restano in questa appliance. Non c'è nulla da configurare sugli host
+          protetti.</span>
+        </div>
+        <div class="callout warn">
+          <span>Il protocollo NUT non è cifrato. Usalo dentro una rete fidata. Se upsd
+          gira su una macchina che PVE-UPS stesso spegne, assicurati che quell'host sia quello
+          marcato <b>“Questo host”</b> o abbia l'ordine di spegnimento più alto — altrimenti la
+          sorgente dati sparisce a metà blackout. Il conto alla rovescia a batteria in quel
+          caso continua comunque (vedi sezione 7), ma una sorgente ancora raggiungibile è meglio.</span>
+        </div>
+
+        <h3>Leggere il risultato del test</h3>
+        <p>Sotto la riga di risultato, <b>“Test UPS”</b> offre <b>Dettagli per oggetto</b> — ogni
+        oggetto interrogato singolarmente, con il suo valore o il motivo per cui manca. Si apre
+        da solo ogni volta che qualcosa non va, e separa i casi che altrimenti
+        sembrano identici:</p>
+        <ul>
+          <li><b>Nulla risponde</b> (ogni riga un errore): indirizzo, porta o credenziali
+          sbagliati, o un firewall blocca UDP&nbsp;161 (SNMP) / TCP&nbsp;3493 (NUT). Per NUT
+          controlla anche che la direttiva <code>LISTEN</code> di upsd copra questo host — di
+          default ascolta solo su localhost.</li>
+          <li><b>Alcuni oggetti rispondono, altri dicono <code>noSuchObject</code> /
+          <code>noSuchInstance</code></b> (SNMP) o <b>“not provided by this driver”</b>
+          (NUT): il dispositivo semplicemente non pubblica quei valori. Quando riguarda un
+          trigger, il test lo dice a parole sopra la tabella — ad esempio un driver
+          senza <code>battery.runtime</code> rende la soglia “Autonomia sotto (min)”
+          permanentemente inefficace. Usa invece il timer “A batteria per più di (s)”: gira
+          sull'orologio dell'appliance e funziona sempre.</li>
+          <li><b><code>noSuchName</code> sotto SNMPv1</b>: l'oggetto manca <i>e</i>
+          v1 interrompe una query multi-oggetto appena un oggetto è assente — il polling
+          regolare fallisce allora completamente anche se gli altri valori sono leggibili.
+          Passa l'UPS a <b>v2c</b> se lo supporta.</li>
+          <li><b>Il polling regolare non ha risposta, ma ogni oggetto risponde uno alla
+          volta</b> (SNMP): la scheda non gestisce una richiesta di più valori insieme — alcuni
+          firmware CyberPower la lasciano semplicemente scadere. Il riepilogo lo dice; imposta il
+          <b>MIB</b> su <b>CyberPower</b>, che viene letto un valore per richiesta.</li>
+          <li><b>Ogni oggetto RFC 1628 mancante, ogni oggetto del produttore che
+          risponde</b>: normale su una scheda APC senza supporto RFC 1628. In modalità
+          <b>Automatico</b> entrambi i MIB sono elencati, quello effettivamente in uso viene
+          per primo, e la riga sopra la tabella lo nomina. Nulla
+          da cambiare — gli oggetti contati e gli avvisi sui trigger si riferiscono sempre al
+          MIB in uso, non a quello perdente.</li>
+          <li><b>“stale data”</b> (NUT): upsd risponde, ma il suo driver ha perso il contatto
+          con l'UPS. I valori che ancora fornisce sono vecchi, quindi PVE-UPS tratta l'UPS
+          come irraggiungibile — un allarme, mai uno spegnimento. Riavvia il driver NUT su
+          quella macchina.</li>
+          <li><b>L'oggetto della sorgente di alimentazione manca o riporta “unknown”</b>: il
+          dispositivo risponde e altri valori arrivano, ma l'unico oggetto che dice se gira su
+          rete o a batteria (<code>upsOutputSource</code>, su APC
+          <code>upsBasicOutputStatus</code>) no. Da ciò non si può concludere nulla,
+          quindi PVE-UPS tratta l'UPS come irraggiungibile — un allarme, mai uno spegnimento, e un
+          conto alla rovescia a batteria in corso continua. Controlla l'impostazione MIB; se il
+          dispositivo davvero non lo implementa, non può essere usato come sorgente di
+          spegnimento.</li>
+          <li><b><code>ups.status</code> non nomina né <code>OL</code> né <code>OB</code></b>
+          (NUT): lo stesso caso dal lato NUT. La variabile c'è, ma porta solo
+          qualcosa come <code>CHRG</code>, <code>ALARM</code> o <code>RB</code> — o è
+          vuota — e nulla di tutto ciò dice da dove arriva l'alimentazione. Trattato esattamente
+          come sopra: irraggiungibile, un allarme, mai uno spegnimento, e un conto alla rovescia in
+          corso continua. Di solito un quirk del driver; controlla il driver sul server NUT.</li>
+        </ul>
+        <div class="callout info">
+          <span><b>Tutti questi dispositivi hanno risposto.</b> PVE-UPS lo tiene volutamente
+          separato da un dispositivo diventato silenzioso, perché <b>“Spegnimento per pura
+          perdita di comunicazione”</b> (vedi <a href="#ausloeser">Trigger</a>) scatta solo sul
+          silenzio. Un UPS che risponde in modo inutilizzabile non lo arma mai — e nemmeno una
+          voce mai interrogabile fin dall'inizio, come una scheda UPS salvata senza indirizzo.
+          L'allarme dice quale dei due casi è, così non ti manda a cercare in una rete che
+          funziona.</span>
+        </div>
+      </section>
+
+      <section class="card" id="logik">
+        <h2 class="sec"><span class="n">6</span> Come funziona e logica</h2>
+        <p>L'engine interroga tutti gli UPS in parallelo e valuta <b>ogni UPS
+        indipendentemente</b>. Ogni polling porta la propria scadenza, derivata dalle
+        impostazioni di timeout e tentativi di quel dispositivo, quindi un server che accetta
+        una connessione e poi tace non può bloccare il conto alla rovescia degli altri. Per UPS
+        c'è una semplice sequenza di stati:</p>
+        <p>
+          <span class="pill ok">ONLINE</span> su rete &nbsp;→&nbsp;
+          <span class="pill warn">ON_BATTERY</span> blackout, UPS a batteria &nbsp;→&nbsp;
+          <span class="pill crit">attivato</span> appena una soglia scatta
+        </p>
+        <h3>Quale host si spegne?</h3>
+        <p>Lo decide la mappatura di ogni host verso i suoi UPS e la sua logica:</p>
+        <ul>
+          <li><b>AND</b> (<code>ups_policy = all</code>, default): l'host si spegne solo
+          quando <i>tutti</i> gli UPS assegnati hanno attivato il trigger — esattamente il
+          comportamento per server con <b>alimentatori ridondanti</b> (un UPS per
+          alimentazione). Finché un UPS continua a erogare corrente, l'host resta acceso.</li>
+          <li><b>OR</b> (<code>ups_policy = any</code>): l'host si spegne appena
+          <i>uno</i> degli UPS assegnati attiva il trigger — per carico separato, non
+          ridondante.</li>
+        </ul>
+        <p>Più host dovuti vengono spenti <b>a stadi</b>, seguendo il campo “Ordine” —
+        crescente, quindi <b>0 parte per primo</b>: tutto ciò che condivide un numero riceve il
+        comando <i>contemporaneamente</i>, e lo stadio successivo parte solo quando quello è
+        finito. L'host su cui gira l'appliance stessa (<code>this_host</code>) forma sempre
+        l'<b>ultimo</b> stadio indipendentemente dal numero, così può ancora spegnere gli
+        altri. Suggerimento: collega l'host dell'appliance a <i>tutti</i> gli UPS così diventa
+        dovuto per ultimo in modo affidabile. La procedura guidata mostra la sequenza risultante
+        in tempo reale sotto la lista host.</p>
+        <p>Ogni comando porta anche una <b>scadenza rigida</b> (“Timeout spegnimento host”).
+        Insieme significano che una macchina che smette di rispondere non può bloccare i suoi
+        compagni di stadio, gli stadi successivi, o il conto alla rovescia della batteria. Usa
+        il campo ordine quando un target deve davvero spegnersi prima di un altro — altrimenti
+        lasciarli uguali è sia più rapido sia più sicuro.</p>
+        <p>Se un UPS richiesto si riprende (la rete torna), uno spegnimento non ancora
+        eseguito viene <b>annullato</b> e lo stato si reimposta.</p>
+        <p>Uno spegnimento che <i>è stato</i> inviato resta bloccato — una macchina in fase di
+        spegnimento non va comandata due volte. Quel blocco viene rilasciato solo quando
+        <b>ogni</b> UPS è stato raggiungibile e su rete per il tempo impostato in “Riarmo dopo
+        ritorno rete (min)” (default 5, vuoto = mai). Solo allora l'appliance è pronta per il
+        blackout successivo: mentre è bloccata, un secondo blackout troverebbe ogni host già
+        marcato come attivato, e anche l'auto-test pianificato e “Ripristina cluster” stanno
+        fermi. Il tempo di attesa esiste perché la rete che torna non è la rete che resta — una
+        rete che cade due volte in un minuto non deve riarmare in mezzo. Un UPS
+        irraggiungibile non conta mai come “rete tornata”. Il ripristino di un cluster
+        preparato resta comunque manuale; il riarmo rende solo di nuovo disponibile quel
+        pulsante, e l'evento lo dice quando un cluster porta ancora la preparazione. Il
+        pulsante “Reimposta stato” fa la stessa cosa immediatamente, in qualsiasi momento.</p>
+
+        <h3 id="cluster">Cluster Proxmox VE <span class="pill warn">Beta</span></h3>
+        <div class="callout warn">
+          <span><b>La preparazione del cluster richiede Proxmox VE 9.2 o più recente.</b> Tutto
+          in questa sezione e nella successiva dipende da <code>disarm-ha</code>, arrivato con
+          la 9.2. Su una release più vecchia HA non viene disarmato, e dove HA gestisce i guest
+          non vengono nemmeno arrestati a livello cluster; i flag di manutenzione Ceph vengono
+          comunque impostati. PVE-UPS lo rileva dall'API stessa, mai da un numero di versione,
+          quindi funziona anche con un backport.</span>
+        </div>
+        <div class="callout warn">
+          <span><b>Novità della 4.0.0, e marcata Beta di proposito.</b> Il meccanismo stesso è
+          conservativo: ogni passo è <i>verificato</i> anziché presunto, la sequenza gira
+          sotto timeout rigidi, e i default sono quelli sicuri. Ciò che finora ha visto poca
+          esposizione è la pura varietà dei cluster reali. Nulla qui accade se non
+          lo spunti. Se lo usi, segnalazioni su ciò che trovi sono benvenute via
+          <a href="https://github.com/ffind-dev/pve-ups/issues" target="_blank"
+             rel="noopener">issue GitHub</a>.</span>
+        </div>
+        <p>Questa sezione copre un <b>cluster Proxmox VE semplice</b>. Se il cluster esegue
+        anche Ceph sui propri nodi, leggi poi
+        <a href="#cluster-ceph">Cluster iperconvergenti (Ceph)</a> — quella parte è un
+        intervento considerevolmente più grande, con privilegi propri.</p>
+        <p>Spunta “Membro del cluster” nel riquadro <i>Cluster Proxmox VE</i> della scheda host —
+        su <b>ogni</b> nodo del cluster. I membri sono raggruppati automaticamente dal nome
+        del cluster letto dall'API, quindi non serve un secondo token né una sezione di
+        configurazione extra, e la preparazione gira esattamente una volta per cluster, prima
+        che il primo nodo si spenga. Ciò che la spunta decide è <i>chi conta come
+        membro</i>: un nodo senza viene preparato attorno anziché dentro, non viene mai
+        trascinato da “spegni l'intero cluster come un'unità”, e i suoi interruttori non hanno
+        voce su ciò che fa il cluster.
+        Da ciò che invece <b>non</b> esime il nodo è la preparazione stessa, che per natura è
+        a livello cluster: HA viene disarmato per l'intero cluster e, con l'arresto guest
+        o Ceph, ogni guest al suo interno viene arrestato — inclusi quelli che girano lì.
+        Lascia il riquadro non spuntato su un nodo di un cluster e quella macchina resta
+        accesa senza HA e senza i suoi guest. L'auto-test pianificato nomina un nodo del
+        genere, così la discrepanza viene scoperta prima di un blackout anziché durante.</p>
+        <p>Gli interruttori di questo riquadro agiscono tutti sull'<b>intero cluster</b> — flag
+        di manutenzione Ceph, stato di arm dell'HA manager, l'arresto guest, e se il cluster si
+        spegne come un'unità — anche se si modificano per scheda host. Quindi imposta
+        ciascuno allo stesso modo su ogni nodo di uno stesso cluster. Dove non concordano,
+        PVE-UPS vale “almeno un nodo l'ha chiesto” (saltare un passo richiesto può costare
+        lo storage; eseguirne uno che nessuno ha chiesto costa un flag di manutenzione) e scrive
+        un avviso nominando entrambe le parti, così la discrepanza emerge al prossimo
+        auto-test anziché durante un blackout.</p>
+        <p>Ciò che fa su un cluster semplice è l'unica cosa che uno spegnimento per nodo non
+        può fare:</p>
+        <ul>
+          <li><b>Disarmo HA</b> — senza, l'HA manager ripristina servizi su nodi che
+          si stanno spegnendo a loro volta. PVE-UPS disarma con
+          <code>resource-mode=ignore</code>; i guest poi escono dal tracciamento HA e
+          <code>pve-guests</code> li spegne nel loro ordine configurato. Questo
+          <i>non</i> è configurabile, e volutamente: sotto <code>freeze</code> i guest
+          restano gestiti da HA, <code>pve-guests</code> li salta e l'LRM disarmato non li
+          ferma più — verrebbero uccisi dallo spegnimento fisico.</li>
+        </ul>
+        <p>Il passo è <b>verificato, non presunto</b>: il disarmo viene interrogato finché lo
+        stato HA riporta davvero <code>disarmed</code>. Gira sotto un timeout rigido, perché
+        avviene mentre la batteria si scarica.</p>
+        <p>Quel timeout (“Timeout disarmo HA / flag Ceph”, in <i>Trigger</i>) è <b>il tempo
+        che il disarmo effettivamente riceve</b>, non solo un freno d'emergenza esterno: il
+        budget viene passato di passo in passo, quindi alzarlo compra davvero più pazienza.
+        Il default è <b>60 s</b>. Il disarmo è la parte lenta, perché lo stack HA lavora a
+        giri di dieci secondi e ogni nodo deve rilasciare il suo watchdog prima che lo stato
+        passi da <code>disarming</code> a <code>disarmed</code>. Sotto circa mezzo minuto di
+        solito non può essere confermato. Ogni secondo qui è uno che lo spegnimento non ha,
+        quindi alzalo consapevolmente — i nodi di quel cluster lo aspettano. Se il budget
+        finisce, l'evento nomina lo stato a cui si è fermato (“still disarming” significa dagli
+        più tempo; uno stack mai mosso è un problema diverso) e ciò che era già stato fatto.
+        Un cluster <i>già</i> disarmato — un secondo blackout prima di averlo ripristinato —
+        viene lasciato stare anziché disarmato di nuovo. In modalità dry-run viene solo
+        registrato; nulla viene cambiato.</p>
+        <p>La preparazione <b>dice quando parte</b>, non solo come è finita: un evento nomina
+        cosa sta per fare, quanti nodi del cluster hanno attivato il trigger, e quanto a lungo
+        i nodi possono aspettarla. Tra quella riga e il risultato, lo spegnimento dei nodi
+        di quel cluster sta aspettando di proposito.</p>
+        <p><b>Se la preparazione fallisce, lo spegnimento continua</b> di default. È
+        l'impostazione più sicura: un disarmo fallito lascia l'HA manager armato, e un HA
+        manager armato ferma i guest da solo — più rumoroso, ma le macchine si spengono
+        comunque. L'opposto (“Annulla lo spegnimento se la preparazione del cluster fallisce”,
+        in <i>Trigger</i>) significa che una preparazione fallita lascia l'intero cluster
+        acceso finché la batteria è vuota.</p>
+
+        <h4 id="cluster-gueststop">Arrestare prima tutti i guest, senza Ceph (opzionale)</h4>
+        <p>Lasciati a sé, i guest di un cluster semplice vengono fermati dai loro nodi man
+        mano che ciascuno si spegne — in ordine <code>startup</code> inverso, gruppo per gruppo,
+        con il ritardo di ogni gruppo. Con molti gruppi ordinati può durare più della batteria.
+        <b>“Arresta prima tutti i guest a livello cluster”</b> (disattivato di default) lo
+        sostituisce con il passo che usa la procedura Ceph: prima che il primo nodo si spenga,
+        a ogni VM e container del cluster tranne questa appliance viene chiesto di spegnersi —
+        tutti insieme, in parallelo — e il risultato viene verificato rileggendo la lista dei
+        guest.</p>
+        <ul>
+          <li><b>L'ordine di avvio viene ignorato</b>, di proposito: il punto è finire prima
+          della batteria. Una dipendenza tra un'applicazione e il suo database non viene
+          rispettata.</li>
+          <li>Ha il suo budget proprio, <b>“Timeout spegnimento guest”</b>, e i guest ancora in
+          esecuzione dopo <b>“Arresto forzato guest dopo”</b> vengono fermati forzatamente — vedi
+          <a href="#cluster-guests">lo spegnimento dei guest</a> sotto; quei dettagli valgono
+          invariati.</li>
+          <li>Dove HA gestisce i guest, HA deve essere <b>disarmato prima</b> (Proxmox VE 9.2+
+          e l'interruttore HA), o l'HA manager li riavvierebbe alla stessa velocità con cui si
+          fermano. Se non può esserlo, il passo viene saltato con un avviso e i nodi fermano i
+          propri guest come prima.</li>
+          <li>Il guest proprio di questa appliance deve essere <b>selezionato</b> — vedi
+          <a href="#cluster-selfguest">il guest proprio dell'appliance</a>. Finché non lo è,
+          nessun guest viene arrestato.</li>
+          <li>Richiede <code>VM.Audit</code> e <code>VM.PowerMgmt</code> (tabella sotto).</li>
+        </ul>
+        <p>Con l'opzione Ceph l'arresto guest è sempre parte della procedura — la scheda
+        host lo mostra allora spuntato e bloccato, e togliere la spunta a Ceph ripristina
+        quello che il riquadro diceva prima.</p>
+
+        <h4 id="cluster-unit">Il cluster si spegne come un'unità</h4>
+        <p>La preparazione è a livello cluster per natura — disarma HA per l'intero cluster,
+        e con l'arresto guest (o l'opzione Ceph) ferma ogni guest al suo interno. Lo
+        spegnimento stesso, però, è per host: un nodo è dovuto quando i <i>suoi</i> UPS lo
+        dicono. Le due cose non devono per forza concordare, e quando non lo fanno il risultato
+        è un cluster lasciato a metà.</p>
+        <p>È a questo che serve <b>“Spegni l'intero cluster come un'unità”</b> (attivo di
+        default): appena un nodo del cluster è dovuto, ogni suo nodo viene spento — inclusi
+        quelli il cui UPS non ha attivato il trigger. Vanno nel solito <code>ordine</code>, con
+        l'host dell'appliance per ultimo, e il registro eventi nomina perché ciascuno è stato
+        trascinato.</p>
+        <p>Disattivalo solo per un cluster semplice dove preferisci che HA sposti i guest
+        di un singolo nodo guasto sugli altri; lì uno spegnimento parziale è un buon risultato.
+        Con l'arresto guest dovrebbe restare attivo, o i nodi che restano accesi hanno perso i
+        loro guest per nulla; con Ceph deve — vedi
+        <a href="#cluster-ceph">la sezione successiva</a> per come appare davvero un cluster
+        iperconvergente spento a metà.</p>
+        <div class="callout warn">
+          <span><b>Un UPS che tace non attiva nulla.</b> Se la rete di management
+          di un UPS muore con il blackout — una configurazione molto comune, dove lo switch è
+          appeso all'UPS stesso che fallisce — PVE-UPS vede un dispositivo irraggiungibile, non
+          un'interruzione di corrente, e il fail-safe rifiuta deliberatamente di spegnere
+          qualcosa per esso (“NO shutdown will be triggered”). I nodi alimentati solo da
+          quell'UPS restano quindi accesi. Due rimedi, e si combinano: lascia attivo
+          <i>“spegni l'intero cluster come un'unità”</i>, così quei nodi si spengono comunque
+          con gli altri, e imposta <b>“Spegnimento per pura perdita di comunicazione dopo
+          (min)”</b> in <i>Trigger</i> se vuoi che un UPS silenzioso conti come blackout da
+          solo. L'auto-test avvisa quando i nodi di uno stesso cluster dipendono da UPS che
+          possono attivarsi indipendentemente.</span>
+        </div>
+        <p><b>Ogni nodo ha bisogno della propria voce host, con il proprio URL API.</b> Lo
+        spegnimento raggiunge il nodo dietro l'URL API di ogni voce (vedi
+        <a href="#token-pve">sezione 4.1</a>), quindi un nodo senza voce è un nodo che nessuno
+        spegne, qualsiasi cosa dicano i nomi — ed è anche un nodo che la regola “come
+        un'unità” non può trascinare. L'auto-test confronta quindi i nomi dei nodi del
+        cluster con le tue voci host e avvisa di ogni nodo che nessuno spegnerebbe, nominando
+        entrambe le liste. Dove la differenza è solo maiuscole/minuscole o un suffisso di
+        dominio, nomina il nodo probabilmente inteso; una voce semplicemente disattivata viene
+        riportata come disabilitata anziché come mal nominata.</p>
+
+        <h4 id="cluster-privs">Privilegi per un cluster semplice</h4>
+        <p>Concedi solo ciò che hai attivato: ogni spunta porta il proprio privilegio, e una
+        spunta lasciata spenta non ti costa nulla. La tabella si legge cumulativamente, dalla
+        configurazione base della <a href="#token">sezione 4</a> in giù. La parte Ceph ha
+        <a href="#cluster-ceph-privs">una tabella propria</a>.</p>
+        <table>
+          <thead><tr><th>Cosa è spuntato</th><th>Serve in più</th><th>Percorso ACL</th></tr></thead>
+          <tbody>
+            <tr><td>nulla (spegnimento semplice)</td><td><code>Sys.PowerMgmt</code></td><td><code>/nodes</code></td></tr>
+            <tr><td>Membro del cluster</td><td><code>Sys.Audit</code></td><td><code>/</code></td></tr>
+            <tr><td>+ Disarma l'HA manager</td><td><code>Sys.Console</code></td><td><code>/</code></td></tr>
+            <tr><td>+ Arresta prima tutti i guest a livello cluster</td><td><code>VM.Audit</code>, <code>VM.PowerMgmt</code></td><td><code>/</code> (conta anche su <code>/vms</code>)</td></tr>
+          </tbody>
+        </table>
+        <p>Scegli la riga che corrisponde alle tue spunte ed eseguila <b>una volta per
+        datacenter</b>, nella shell di un qualsiasi nodo. <code>Sys.PowerMgmt</code> non compare
+        qui di proposito — è già su <code>/nodes</code> dalla configurazione base, e non c'è
+        motivo di allargarlo all'intero datacenter:</p>
+<pre><code># Membro del cluster, senza sotto-opzioni — controlli di stato in sola lettura:
+pveum role add UpsCluster -privs "Sys.Audit"
+
+# ... più disarmo HA (concede accesso shell, vedi l'avviso sotto):
+pveum role add UpsCluster -privs "Sys.Audit Sys.Console"
+
+# ... più l'arresto guest a livello cluster:
+pveum role add UpsCluster -privs "Sys.Audit Sys.Console VM.Audit VM.PowerMgmt"</code></pre>
+        <p>Poi collega il ruolo — <b>entrambe</b> le righe, vedi la nota sulla
+        separazione dei privilegi sotto:</p>
+<pre><code>pveum acl modify / -user ups@pve -role UpsCluster
+pveum acl modify / -token 'ups@pve!shutdown' -role UpsCluster</code></pre>
+        <p>L'auto-test segue la stessa regola: chiede un privilegio solo dove la
+        funzionalità è attiva <i>e</i> questo cluster può effettivamente farla. A una release
+        senza <code>disarm-ha</code> non viene mai chiesto <code>Sys.Console</code> — quindi un
+        avviso su un privilegio mancante significa sempre qualcosa di cui hai davvero
+        bisogno.</p>
+        <p>Anche il pulsante <b>“Test”</b> sulla scheda host verifica questi privilegi,
+        appena l'opzione cluster è spuntata: nomina ognuno di quelli mancanti, riporta il
+        cluster trovato (nome, numero di nodi, stato Ceph e arm di HA), e lo dice se il nodo
+        risulta non essere affatto membro di un cluster. Un privilegio cluster mancante è
+        riportato come avviso, non come errore — la connessione stessa funziona comunque.
+        Ogni nome viene con ciò che compra (“<code>Sys.Console</code> (disarmo HA)”), così la
+        decisione se concederlo non richiede questa pagina aperta. Sotto, un <b>pannello
+        dettagli</b> elenca ogni query con il suo esito (si apre da solo quando qualcosa non
+        va), così si vede cosa ogni endpoint ha effettivamente risposto anziché solo la riga
+        di riepilogo. Una query che serve solo a un'opzione non spuntata — la lista guest
+        senza l'arresto guest, ad esempio — appare come <i>“not readable (not needed)”</i> e
+        lascia il pannello chiuso.</p>
+        <div class="callout warn">
+          <span><b><code>Sys.Console</code> concede di fatto accesso shell ai nodi.</b>
+          Per questo il disarmo HA è un interruttore a sé: se non vuoi concederlo,
+          lascia l'interruttore spento e usa la riga <code>Sys.Audit</code> sopra.
+          Nota anche che i token API hanno la <b>separazione dei privilegi</b> attiva di
+          default e hanno bisogno di una voce ACL propria — i diritti dell'utente non
+          bastano, ed è per questo che i due comandi <code>acl modify</code> sopra sono
+          entrambi necessari.</span>
+        </div>
+        <div class="callout info">
+          <span>Uno <b>stack HA disarmato viene riportato anche quando nessun guest è
+          gestito da HA</b>. Le due cose sono indipendenti: il disarmo ferma il fencing
+          a livello cluster, e resta così finché qualcuno lo riarma — quindi sia
+          l'auto-test sia “Ripristina cluster” si basano sullo stato di arm, non sul fatto
+          che HA gestisca attualmente qualcosa.</span>
+        </div>
+        <div class="callout info">
+          <span>Su <b>Proxmox VE più vecchio della 9.2</b> non c'è <code>disarm-ha</code>.
+          Imposta invece l'opzione datacenter <code>shutdown_policy=freeze</code>; il default
+          <code>conditional</code> ripristina i servizi HA su nodi che si stanno spegnendo,
+          e <code>migrate</code> è pure peggio, perché l'LRM allora <i>ritarda</i> lo
+          spegnimento finché tutto non è migrato via. L'auto-test avvisa di entrambi.</span>
+        </div>
+        <p><b>Dopo, il cluster resta preparato.</b> Non c'è riarmo automatico:
+        riportare su HA mentre i nodi stanno ancora facendo boot è una decisione da valutare.
+        L'auto-test continua ad avvisare che HA è disarmato (e che i flag sono impostati,
+        dove lo erano), e la dashboard mostra un pulsante <b>“Ripristina cluster”</b> — riarma
+        HA e rimuove i flag, ciascuno verificato, e compare solo finché c'è effettivamente
+        qualcosa da annullare. Dato che l'appliance si spegne per ultima e torna con gli
+        altri, ispeziona i cluster <b>una volta all'avvio</b>, così i residui sono subito
+        sulla dashboard anziché al prossimo auto-test pianificato. Il pulsante è nascosto — e
+        l'API rifiuta la richiesta — mentre uno spegnimento è in corso: armare HA lì
+        annullerebbe la preparazione nell'unico momento in cui sta facendo il suo lavoro.</p>
+        <p class="muted">Su un cluster semplice, i singoli guest non vengono mai toccati da
+        PVE-UPS: a uno spegnimento vengono comunque fermati nel loro ordine configurato —
+        dall'LRM mentre HA è armato, e da <code>pve-guests</code> una volta disarmato — e il
+        problema che il disarmo HA risolve è puramente il <i>ripristino su altri nodi</i>
+        dopo. Solo l'arresto guest cambia questo — spuntato da solo, o come parte
+        dell'opzione Ceph.</p>
+
+        <h3 id="cluster-ceph">Cluster iperconvergenti (Ceph) <span class="pill warn">Beta</span></h3>
+        <div class="callout warn">
+          <span><b>Questo è un intervento considerevolmente più grande della sezione
+          sopra.</b> Con “Prepara il cluster Ceph” spuntato, PVE-UPS <b>arresta ogni VM e
+          container del cluster</b> prima che il primo nodo si spenga — non viene solo
+          riorganizzato HA. Servono anche altri tre privilegi, il guest proprio di questa
+          appliance va selezionato perché venga risparmiato, e quel guest non deve risiedere
+          su storage Ceph. Leggi questa sezione prima di attivarlo.</span>
+        </div>
+        <p>Vale tutto ciò che dice <a href="#cluster">la sezione precedente</a>; questo le
+        aggiunge due passi. L'ordine è quello in cui girano, ed è portante — gli
+        interruttori sulla scheda host sono elencati nello stesso ordine esattamente per
+        questo motivo:</p>
+        <ol>
+          <li><b>Disarmo HA</b> — deve venire per primo, o l'HA manager riavvia ogni guest
+          che il passo 2 ferma.</li>
+          <li><b>Tutti i guest vengono arrestati, a livello cluster</b> — ogni VM e container
+          tranne questa appliance stessa.</li>
+          <li><b>Flag di manutenzione Ceph</b> — vengono impostati <code>noout</code>,
+          <code>nobackfill</code>, <code>norecover</code> e <code>norebalance</code> così Ceph
+          non inizia il healing mentre gli OSD spariscono uno a uno. Equivalente a
+          <code>ceph osd set noout</code> e simili.</li>
+        </ol>
+        <p>I passi 2 e 3 sono un'unica opzione, ed è <b>disattivata di default</b>: molti
+        cluster girano su replicazione ZFS o NFS/iSCSI condiviso, e questa è l'unica parte che
+        scrive in un layer di storage. Su un cluster senza Ceph viene saltata anziché tentata
+        e riportata come fallimento, e i suoi privilegi non sono richiesti. Il passo 2 esiste
+        anche da solo, per cluster senza Ceph (<a href="#cluster-gueststop">vedi sopra</a>),
+        ma con Ceph non si può disattivare: lì non è un'opzione ma il primo passo della
+        procedura ufficiale, e una spunta la cui assenza blocca il cluster durante un blackout
+        sarebbe una trappola. La scheda host lo mostra spuntato e bloccato mentre Ceph è
+        attivo.</p>
+        <p>I flag sono <b>verificati, non presunti</b>: l'aggiornamento bulk è asincrono
+        (restituisce solo un worker id), quindi vengono riletti — con ripiego
+        sull'impostarli singolarmente.</p>
+        <div class="callout warn">
+          <span><b>Lascia attivo “spegni l'intero cluster come un'unità” qui.</b> Un cluster
+          iperconvergente spento in parte non ha uno stato sensato. Un esempio reale da un
+          cluster a quattro nodi: un solo UPS ha attivato il trigger, quindi due nodi si sono
+          spenti mentre gli altri due restavano accesi. La preparazione aveva già fermato ogni
+          guest e disarmato HA a livello cluster, e due dei tre monitor Ceph erano sui nodi
+          uscenti — quindi i sopravvissuti sono rimasti lì senza guest, senza HA e senza
+          quorum di storage. Spegnere del tutto o per nulla un cluster iperconvergente è una
+          scelta reale; spegnerne metà no.</span>
+        </div>
+
+        <h4 id="cluster-guests">Perché i guest devono fermarsi prima</h4>
+        <p>Questa è la parte in cui uno spegnimento per nodo sbaglia. Lasciato a sé, ogni
+        nodo ferma i propri guest mentre si spegne — che suona ordinato e poi si blocca. Con
+        il solito <code>size=3/min_size=2</code>, il pool sta bene dopo la partenza del primo
+        nodo, ma una volta spariti gli OSD del secondo scende sotto <code>min_size</code>. I
+        guest ancora in esecuzione sul nodo sopravvissuto ora si bloccano sulla IO: il loro
+        spegnimento non finisce mai, quindi quel nodo non si spegne mai, e la batteria si
+        esaurisce con il cluster spento a metà.</p>
+        <p>Proxmox documenta lo stesso ordine (“Shutdown Proxmox VE + Ceph HCI cluster”):
+        ferma prima tutti i client Ceph, poi imposta i flag OSD, poi spegni i nodi.
+        PVE-UPS lo segue. A ogni guest in esecuzione viene chiesto di spegnersi insieme — fino a
+        otto richieste in volo, perché chiederlo a quaranta guest uno dopo l'altro spenderebbe
+        un connect timeout su ciascuno — e il risultato è <b>verificato</b> rileggendo la
+        lista guest del cluster, mai dedotto dalla risposta dell'API.</p>
+        <p>Due timeout in <i>Trigger</i> governano questo, e sono separati di
+        proposito:</p>
+        <ul>
+          <li><b>“Timeout spegnimento guest”</b> (default <b>300 s</b>) — il budget per
+          fermare i guest. Scala con quanti ne hai e quanto ci mettono;
+          il budget HA/Ceph accanto è misurato in giri HA di dieci secondi e varia
+          a malapena. Un unico numero non potrebbe servire entrambi, e fonderli farebbe
+          mangiare ai guest il tempo del disarmo.</li>
+          <li><b>“Arresto forzato guest dopo”</b> (default <b>120 s</b>) — quando un guest
+          che ignora la richiesta viene fermato forzatamente. Il valore viene passato anche a
+          Proxmox come timeout proprio della chiamata di spegnimento, quindi l'arresto avviene
+          comunque se questa appliance perde la rete subito dopo aver chiesto. Lascialo vuoto
+          per non forzare mai: un guest bloccato fa allora fallire la preparazione e viene
+          nominato nel registro eventi.</li>
+        </ul>
+        <p>Guarda il totale. Tra lo scatto del trigger e l'ultimo nodo a cui viene detto di
+        spegnersi, il caso peggiore è il budget HA/Ceph più il budget guest più il timeout
+        di spegnimento per nodo — con i default, <b>420 s</b>. La pagina impostazioni mostra
+        quel numero, e l'auto-test avvisa quando il trigger “autonomia stimata sotto” scatta
+        più tardi di quanto la sequenza richieda. Avvisa soltanto; non corregge mai un
+        trigger al posto tuo.</p>
+        <p><b>Ordine dei nodi:</b> Proxmox consiglia di spegnere prima i nodi <i>senza</i>
+        monitor Ceph. PVE-UPS legge il monmap e ti dice quando i tuoi valori “ordine” lo
+        contraddicono, nel test host e nell'auto-test — ma non li riordina mai da solo.
+        Il tuo ordine è configurazione esplicita, e sovrascriverlo silenziosamente al momento
+        del blackout renderebbe bugiarda la sequenza mostrata sulla dashboard.</p>
+        <p class="muted">Non gestito: i guest vengono fermati in parallelo, non nel loro
+        ordine <code>startup</code>, quindi una dipendenza tra un'applicazione e il suo
+        database non viene rispettata. L'obiettivo qui è fermare la IO rapidamente, e la
+        batteria è il motivo.</p>
+
+        <h4 id="cluster-selfguest">Il guest proprio di questa appliance</h4>
+        <p>“Arresta tutti i guest” non deve includere l'appliance che arresta. In
+        <i>Trigger</i> → <b>Questa appliance</b>, scegli dalla lista la VM o il container in
+        cui gira PVE-UPS. È una lista e non un campo di testo di proposito: un id sbagliato
+        significa che questa appliance spegne <i>sé stessa</i> nel mezzo di un blackout. Se
+        gira davvero altrove — Docker su un NAS, bare metal, un altro cluster — scegli “non è
+        un guest di questo cluster”.</p>
+        <p>La scelta fa due cose. Marca l'unico guest che non viene mai arrestato, e
+        imposta <b>“Questo host”</b> sulla scheda host del nodo su cui quel guest gira, così
+        quel nodo si spegne per ultimo. Quella spunta appare allora come presa dalla selezione
+        anziché mantenuta due volte; senza una scelta resta un interruttore manuale, come su
+        un host standalone. Se l'appliance viene poi migrata su un altro nodo, l'auto-test lo
+        dice.</p>
+        <p>Finché nulla è selezionato e “non è un guest di questo cluster” non è impostato,
+        <b>i guest non vengono arrestati affatto</b>. Il registro eventi lo dice ad alta voce e
+        lo spegnimento continua senza quel passo — che è esattamente ciò che facevano le
+        release precedenti. Rifiutare è l'unica risposta sicura qui: l'alternativa è
+        indovinare, e un'ipotesi sbagliata spegne la macchina che sta eseguendo lo
+        spegnimento.</p>
+        <div class="callout warn">
+          <span><b>Questo container non deve risiedere su storage Ceph.</b> È l'unico guest
+          che deve sopravvivere al cluster che sta spegnendo. Su Ceph non ci riesce: una volta
+          che gli OSD dei nodi uscenti portano il pool sotto <code>min_size</code>, il suo stesso
+          disco smette di rispondere e non può più spegnere nulla — a metà del
+          blackout. Usa <code>local-lvm</code>, <code>local-zfs</code> o uno storage directory.
+          <code>install.sh</code> lo impone: gli storage su Ceph vengono saltati quando ne
+          viene scelto uno automaticamente e rifiutati quando nominati con
+          <code>--storage</code>, a meno che non passi <code>--allow-ceph-storage</code>. A
+          runtime il test host, l'auto-test e la dashboard lo dicono tutti se l'appliance è
+          comunque su Ceph.</span>
+        </div>
+
+        <h4 id="cluster-ceph-privs">Privilegi per la parte Ceph</h4>
+        <p>In aggiunta ai <a href="#cluster-privs">privilegi del cluster semplice</a>:</p>
+        <table>
+          <thead><tr><th>Cosa è spuntato</th><th>Serve in più</th><th>Percorso ACL</th></tr></thead>
+          <tbody>
+            <tr><td>Prepara il cluster Ceph</td><td><code>Sys.Modify</code>, <code>VM.Audit</code>, <code>VM.PowerMgmt</code></td><td><code>/</code> (quelli VM contano anche su <code>/vms</code>)</td></tr>
+            <tr><td>opzionale, per una diagnosi migliore</td><td><code>Datastore.Audit</code></td><td><code>/</code> o <code>/storage</code></td></tr>
+          </tbody>
+        </table>
+<pre><code># Parte Ceph senza disarmo HA:
+pveum role add UpsCluster -privs "Sys.Audit Sys.Modify VM.Audit VM.PowerMgmt"
+
+# Tutto, incluso il controllo storage opzionale:
+pveum role add UpsCluster -privs "Sys.Audit Sys.Console Sys.Modify VM.Audit VM.PowerMgmt Datastore.Audit"</code></pre>
+        <p>Collega il ruolo con gli stessi due comandi <code>acl modify</code> di sopra. A un
+        cluster senza Ceph non viene mai chiesto <code>Sys.Modify</code>, e
+        <code>VM.Audit</code> o <code>VM.PowerMgmt</code> solo con l'arresto guest
+        spuntato. <code>Datastore.Audit</code> è
+        l'eccezione che conferma la regola: compra solo il controllo se questa appliance
+        sta su Ceph, quindi la sua assenza viene menzionata discretamente e mai riportata come
+        privilegio mancante.</p>
+        <div class="callout info">
+          <span><b>Perché <code>VM.Audit</code> conta più di quanto sembri.</b>
+          <code>/cluster/resources</code> filtra per privilegio invece di rifiutare: un token
+          senza <code>VM.Audit</code> riceve una risposta perfettamente riuscita con una lista
+          guest <i>vuota</i>. PVE-UPS quindi non legge mai “vuota” come “nessun guest da
+          fermare” a meno che il token non dimostri di avere il privilegio — altrimenti
+          riporterebbe una preparazione riuscita mentre quaranta guest continuano a scrivere
+          su Ceph.</span>
+        </div>
+        <p class="muted">“Ripristina cluster” <b>non</b> riavvia i guest — tornano
+        tramite la loro impostazione <code>onboot</code> quando i nodi si accendono.</p>
+      </section>
+
+      <section class="card" id="failsafe">
+        <h2 class="sec"><span class="n">7</span> Fail-safe e casi limite</h2>
+        <p>Principio guida: una <b>connessione SNMP persa non è un blackout confermato</b> —
+        l'UPS può essere solo momentaneamente non reattivo, o uno switch in mezzo è giù. Di
+        default una perdita di comunicazione genera quindi <b>solo un allarme</b>, nessuno
+        spegnimento. Due impostazioni opzionali lo raffinano:</p>
+        <ul>
+          <li><b>Continua lo spegnimento alla perdita</b> (default attivo): se il contatto
+          con l'UPS si perde <i>dopo</i> che il funzionamento a batteria era già confermato,
+          un conto alla rovescia a batteria avviato continua sull'orologio locale e scatta alla
+          scadenza. Solo questo trigger basato sul tempo sopravvive allo stato “cieco”
+          (autonomia e carica sono allora illeggibili). Se un trigger (es. batteria scarica o
+          la soglia di carica) era già scattato <b>prima che la connessione cadesse</b>, resta
+          bloccato e non viene degradato al conto alla rovescia. Sia il conto alla rovescia
+          sia lo stato attivato sopravvivono anche a un <b>riavvio del servizio</b>: sono
+          persistiti su disco e ripristinati all'avvio (fino a 24&nbsp;h di età).</li>
+          <li><b>Spegnimento dopo X minuti di pura perdita</b> (default spento): tratta una
+          pura perdita di comunicazione (senza funzionamento a batteria confermato in
+          precedenza) come blackout dopo X minuti. Un opt-in deliberato per ambienti dove una
+          perdita di contatto prolungata conta come critica. Scatta solo sul <em>silenzio</em>:
+          un dispositivo che risponde ma la cui risposta non è utilizzabile &mdash; nessuna
+          sorgente di alimentazione utilizzabile, nessuno degli oggetti del MIB selezionato,
+          un <code>ups.status</code> che non nomina né <code>OL</code> né <code>OB</code>, o
+          un server NUT che risponde <code>ERR&nbsp;DATA-STALE</code>,
+          <code>DRIVER-NOT-CONNECTED</code>, <code>ACCESS-DENIED</code> o
+          <code>UNKNOWN-UPS</code> &mdash; viene trattato come irraggiungibile per ogni altro
+          scopo, ma mai come perdita di comunicazione. La
+          connessione c'è chiaramente, quindi questo trigger ne resta fuori; l'allarme dice
+          quale dei due casi è. Lo stesso vale per una voce non interrogabile affatto
+          (una scheda UPS salvata senza indirizzo, ad es. da un import di backup): non ha mai
+          inviato un pacchetto, quindi non ha prodotto prove sull'alimentazione, e
+          resta ciò che è altrove &mdash; un allarme e un rifiuto di spegnere gli host
+          che alimenta, non un ordine di farlo.</li>
+        </ul>
+        <h3>Panoramica dei casi</h3>
+        <table>
+          <thead><tr><th>Situazione</th><th>Comportamento</th></tr></thead>
+          <tbody>
+            <tr><td>Su rete, tutto ok</td><td>nulla (mostra “Su rete elettrica”)</td></tr>
+            <tr><td>A batteria, un trigger scatta</td><td>spegnimento (host a stadi per ordine, host proprio ultimo)</td></tr>
+            <tr><td>Contatto perso mentre è su rete</td><td>solo allarme, <b>nessuno</b> spegnimento</td></tr>
+            <tr><td>Contatto perso durante un conto alla rovescia a batteria</td><td>il countdown continua, spegnimento alla scadenza</td></tr>
+            <tr><td>Contatto perso dopo un trigger già scattato</td><td>il trigger resta bloccato (nessun downgrade)</td></tr>
+            <tr><td>Pura perdita di contatto con l'opt-in attivo</td><td>spegnimento alla scadenza della soglia</td></tr>
+            <tr><td>Server NUT risponde con dati obsoleti</td><td>conta come irraggiungibile (allarme), mai come “su rete”</td></tr>
+            <tr><td>L'UPS risponde ma non riporta una sorgente utilizzabile</td><td>conta come irraggiungibile (allarme), mai come “su rete”</td></tr>
+            <tr><td>Dry-run attivo</td><td>il trigger viene rilevato + registrato, nulla viene spento</td></tr>
+            <tr><td>La rete torna</td><td>lo stato si reimposta; uno spegnimento già inviato
+            viene rilasciato dopo “Riarmo dopo ritorno rete”</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="card" id="ausloeser">
+        <h2 class="sec"><span class="n">8</span> Trigger e soglie</h2>
+        <p><b>Una</b> condizione soddisfatta basta. Tutti i valori si possono cambiare nella
+        procedura guidata (campo vuoto = condizione disattivata); le soglie sono impostate
+        globalmente e si possono sovrascrivere per UPS.</p>
+        <p><b>Come viene misurato “a batteria per più di”.</b> PVE-UPS misura il
+        blackout sul proprio orologio, dal polling in cui ha visto per la prima volta l'UPS
+        passare a batteria. Deliberatamente <em>non</em> usa il contatore di tempo trascorso che
+        l'UPS riporta: lo standard definisce quel valore solo mentre il dispositivo è a
+        batteria, e una scheda che conserva il dato del blackout precedente invece di
+        azzerarlo farebbe apparire il primissimo polling di un nuovo blackout come se la
+        soglia fosse già passata. Quel contatore non viene letto affatto. Il timer in corso
+        sopravvive a un riavvio del servizio, quindi un aggiornamento o un reboot non lo
+        perdono; solo dove quel timer memorizzato è inutilizzabile (mancante, o più vecchio
+        di un giorno) un'appliance che si avvia in un blackout già in corso ricomincia a
+        contare da zero &mdash; e le condizioni su autonomia, carica e “batteria scarica”
+        leggono valori freschi e non ne sono influenzate. La pagina di
+        stato indica se un tempo trascorso è stato misurato affatto.</p>
+        <p><b>Un timer ripristinato aspetta che l'UPS confermi il blackout.</b> Questa
+        appliance spegne il proprio host per ultimo, quindi <em>ogni</em> blackout finisce con
+        il suo riavvio &mdash; e torna a un timer memorizzato che dice “a batteria da tre
+        ore”. Quello è esattamente il momento in cui uno switch sta ancora convergendo e una
+        scheda SNMP sta ancora avviandosi, e un timer preso per buono lì
+        spegnerebbe di nuovo le macchine appena risalite. Quindi nulla di ciò che viene letto
+        dal file memorizzato spegne qualcosa finché un polling del servizio riavviato non ha
+        risposto. Quella risposta decide in ogni caso: su rete, tutto ciò che è stato
+        ripristinato viene scartato; ancora a batteria, il trigger viene calcolato dal tempo
+        ripristinato <em>intero</em> su quello stesso polling. Un riavvio nel mezzo di un
+        blackout non costa quindi nulla, perché lì l'UPS è raggiungibile per definizione.
+        L'unico caso che perde il countdown è un UPS che non risponde mai più dopo il
+        riavvio &mdash; e lì l'appliance non ha affatto prove che il blackout sia ancora in
+        corso, che è esattamente quando non agisce. Mentre un timer è in attesa la
+        dashboard lo dice invece di contare alla rovescia verso uno spegnimento che non
+        avverrà. Un timer in attesa non conta nemmeno come blackout per i controlli che si
+        fermano durante uno: l'auto-test, i controlli all'avvio e
+        <b>“Ripristina cluster”</b> restano disponibili, il che conta perché un UPS ancora
+        silenzioso dopo il reboot dell'appliance è esattamente quando il cluster lasciato
+        dall'ultimo blackout va ripristinato.</p>
+        <p><b>Se una richiesta di spegnimento fallisce</b> &mdash; un'API occupata, una
+        connessione caduta, o un nodo che ha semplicemente impiegato troppo a rispondere
+        &mdash; a quell'host viene chiesto di nuovo ai polling successivi, fino a tre
+        tentativi in totale, e ognuno finisce nel registro eventi. Una richiesta ripetuta a
+        una macchina che si sta già spegnendo non fa danni; non richiederlo la lascerebbe
+        accesa finché la batteria è vuota. Se la rete torna mentre un host è ancora in
+        ritentativo, l'episodio si chiude come ogni altro: l'appliance torna a
+        <span class="pill ok">ONLINE</span> e scrive un evento critico che dice che quella
+        macchina non è mai scesa ed è ancora in esecuzione.</p>
+        <p><b>Valori fuori da un intervallo sensato vengono corretti, non obbediti.</b> Un
+        intervallo di polling pari a zero o un timeout negativo ripiegano sul default e
+        scrivono un evento che nomina l'impostazione. È voluto: rifiutare di caricare la
+        configurazione significherebbe che l'appliance non si avvia più, e non protegge
+        nulla.</p>
+        <table>
+          <thead><tr><th>Condizione</th><th>Default</th></tr></thead>
+          <tbody>
+            <tr><td>A batteria per più di</td><td>600 s</td></tr>
+            <tr><td>Autonomia sotto</td><td>10 min</td></tr>
+            <tr><td>Carica sotto</td><td>30 %</td></tr>
+            <tr><td>L'UPS segnala <code>battery low/depleted</code></td><td>attivo</td></tr>
+          </tbody>
+        </table>
+        <p class="muted">Intervallo di polling: 30 s su rete, 8 s a batteria.</p>
+        <p>Le soglie batteria scarica, autonomia e carica scattano <b>immediatamente</b> —
+        indipendentemente dal conto alla rovescia temporale. Il countdown mostrato sulla
+        dashboard si riferisce esclusivamente alla condizione "a batteria per più di" e
+        sparisce appena l'UPS ha attivato il trigger. Se un host si spegne subito a quel
+        punto lo decide la sua logica AND/OR (vedi <a href="#logik">Come funziona e
+        logica</a>): con AND aspetta che <i>tutti</i> i suoi UPS alimentanti abbiano
+        attivato.</p>
+      </section>
+
+      <section class="card" id="monitoring">
+        <h2 class="sec"><span class="n">9</span> Monitoraggio / REST</h2>
+        <p>Due endpoint in sola lettura sono disponibili <b>senza autenticazione e senza
+        segreti</b>:</p>
+        <ul>
+          <li><code>GET /api/status</code> — lo stato completo: appliance, tutti gli UPS,
+          gli host, lo stato dello spegnimento, i target di notifica con l'esito della loro
+          ultima consegna (<code>webhooks</code>, volutamente senza l'URL), più gli eventi
+          delle ultime 48 h con un riepilogo per gravità.</li>
+          <li><code>GET /api/health</code> — <code>200</code> quando l'engine è in esecuzione
+          (con versione e raggiungibilità degli UPS), altrimenti <code>503</code>. Ideale per
+          controlli di uptime. Riporta anche i target di spegnimento: <code>hosts_total</code>,
+          <code>hosts_ok</code> (l'ultimo auto-test ha confermato token <i>e</i> privilegio),
+          <code>hosts_selftest_ok</code> e <code>hosts_selftest_at</code>, i
+          target di notifica (<code>webhooks_total</code>, <code>webhooks_ok</code> —
+          un target conta come ok finché un invio non è dimostrabilmente fallito, quindi uno mai
+          provato non risulta guasto) e <code>dry_run</code>. Questi sono
+          informativi — un token rotto <i>non</i> porta l'endpoint a
+          <code>503</code>, perché l'appliance stessa sta ancora facendo il suo lavoro. Allerta su
+          <code>hosts_selftest_ok</code>, <code>webhooks_ok</code> e <code>dry_run</code>
+          separatamente se vuoi esserne avvisato: un'appliance lasciata in dry-run passa ogni
+          controllo qui, risponde <code>ok</code>, e non spegne nulla.</li>
+        </ul>
+<pre><code>curl http://&lt;container-ip&gt;:8080/api/status | jq
+# solo gli eventi critici delle ultime 48 h:
+curl -s http://&lt;container-ip&gt;:8080/api/status \
+  | jq '.events[] | select(.severity=="critical")'</code></pre>
+        <p class="muted">Tutti gli endpoint modificanti (salvataggio procedura guidata, test
+        di spegnimento) sono protetti da password.</p>
+        <div class="callout info">
+          <span>Il registro eventi, i messaggi webhook e i messaggi API sono uniformemente
+          in <b>inglese</b> — indipendentemente dalla lingua UI selezionata. Questo mantiene
+          analisi e monitoraggio coerenti tra le installazioni.</span>
+        </div>
+
+        <h3 id="history">Storico</h3>
+        <p>La scheda <b>Storico</b>, tra Dashboard e Impostazioni, mostra ogni UPS nel
+        tempo: autonomia residua, carico e carica, con lo stato di alimentazione come
+        sfondo colorato — a batteria, spegnimento attivato, non raggiungibile, bypass. Gli
+        eventi del registro appaiono come marcatori: avvisi ed eventi critici sempre, quelli
+        informativi (l'auto-test, ad esempio) quando spuntati. Passando sul grafico si
+        vedono i valori di quel momento e gli eventi al marcatore.</p>
+        <ul>
+          <li><b>Periodi</b> da 1 ora a 90 giorni, e “Tutto” — o un qualsiasi inizio e fine
+          digitati in <b>Da</b> e <b>A</b>; quei due campi mostrano sempre il periodo sullo
+          schermo. Trascina sul grafico per ingrandire un tratto, doppio clic per tornare al
+          preset; un periodo fisso non si aggiorna sotto di te.</li>
+          <li><b>Un UPS</b>: autonomia in minuti sopra, carico e carica in percentuale sotto —
+          due pannelli su un asse temporale anziché un grafico con due scale. La linea
+          tratteggiata è il trigger “Autonomia sotto” che quell'UPS usa davvero, così vedi
+          quanto un blackout ci è andato vicino.</li>
+          <li><b>Tutti</b> (con più di un UPS): una misura per ogni UPS in un unico
+          grafico, e una striscia di stato per UPS sotto.</li>
+          <li>La <b>tabella blackout</b> elenca ogni tratto a batteria nel periodo — inizio,
+          durata, autonomia e carica minime, carico massimo, se uno spegnimento è stato
+          attivato. Cliccando una riga il grafico zooma su quel blackout.</li>
+          <li><b>CSV</b> scarica i valori grezzi del periodo sullo schermo.</li>
+        </ul>
+        <p>Cosa viene registrato: un valore per UPS al minuto su rete, uno per polling a
+        batteria, e uno a ogni cambio di stato — circa 1.440 righe per UPS al giorno, pochi
+        MB per UPS su 90 giorni. Vive in <code>history.db</code> accanto al registro eventi
+        (in Docker, nello stesso volume), <b>non</b> fa parte del backup della configurazione, e
+        “Svuota registro” lo lascia stare. È scritto in background: un disco lento o pieno
+        costa lo storico, mai lo spegnimento.</p>
+        <p>In <i>Impostazioni → Sistema</i> la registrazione si può disattivare, la
+        retention impostare in giorni (1–365, default 90) e lo storico svuotare. Spento ferma
+        la registrazione e nasconde la scheda; ciò che è stato registrato resta finché non
+        scade.
+        <b>Una nuova installazione registra dall'inizio; dopo un aggiornamento da una versione
+        precedente resta spento</b> finché non lo attivi, così un aggiornamento non inizia mai
+        a scrivere su un disco che nessuno ha dimensionato per questo.</p>
+
+        <h3 id="webhook">Notifiche webhook</h3>
+        <p>Opzionalmente, ogni evento rilevante viene inviato via HTTP POST a un URL a
+        scelta (impostazioni, sezione 4). Puoi configurare <b>tutti i webhook che vuoi</b> —
+        una scheda per target, ciascuna con formato, filtro di gravità e pulsante di test
+        propri. Gli invii girano in parallelo e vengono riportati singolarmente, quindi un
+        target irraggiungibile non costa agli altri la loro notifica.</p>
+        <p><b>Un target che smette di funzionare lo dice.</b> Un token scaduto o un
+        connettore cancellato fallivano in silenzio, il che significava scoprirlo durante il
+        blackout che non ti è mai arrivato. Il primo fallimento dopo un invio riuscito viene
+        scritto nel registro eventi, la scheda webhook mostra l'ultimo errore finché un invio
+        non riesce di nuovo, e la scheda appliance della dashboard guadagna una riga
+        &ldquo;Notifiche&rdquo; finché un qualsiasi target fallisce &mdash; la pagina
+        impostazioni non è dove qualcuno guarda mentre un blackout è in corso. Le notifiche
+        restano best-effort comunque: non vengono mai ritentate, e un target che fallisce non
+        ritarda né influenza mai uno spegnimento.</p>
+        <p><b>Formato</b> — la forma del payload, in base al tuo sistema di
+        destinazione:</p>
+        <table>
+          <thead><tr><th>Formato</th><th>Invia</th></tr></thead>
+          <tbody>
+            <tr><td>JSON (stato completo)</td><td><code>{subject, body, severity, status}</code> —
+            <code>status</code> è lo snapshot completo di <code>/api/status</code>. Per sistemi
+            di ticket, monitoraggio e automazione.</td></tr>
+            <tr><td>Microsoft Teams</td><td>una adaptive card (intestazione colorata per
+            gravità, testo del messaggio, fatti su UPS, host e modalità) nella busta
+            messaggio che Teams si aspetta.</td></tr>
+            <tr><td>Testo semplice</td><td>un breve stato leggibile come
+            <code>text/plain</code> — per qualsiasi cosa che mostri semplicemente una riga di
+            testo.</td></tr>
+            <tr><td>Slack</td><td>un allegato con barra colorata per gravità e i fatti come
+            campi. Usa l'URL dell'integrazione “Incoming Webhooks” di un'app Slack
+            (<code>https://hooks.slack.com/services/…</code>).</td></tr>
+            <tr><td>Discord</td><td>un embed con titolo, descrizione e campi. Usa l'URL
+            da canale → <i>Modifica</i> → <i>Integrazioni</i> → <i>Webhook</i>.</td></tr>
+            <tr><td>ntfy</td><td>un push in testo semplice i cui header <code>Title</code>,
+            <code>Priority</code> e <code>Tags</code> vengono impostati dall'evento. Usa
+            l'URL del topic (<code>https://ntfy.sh/il-tuo-topic</code>).</td></tr>
+            <tr><td>Personalizzato (template)</td><td>un body che scrivi tu, più il content
+            type — per un target a cui nessun preset si adatta. Vedi sotto.</td></tr>
+          </tbody>
+        </table>
+        <p>Per <b>Microsoft Teams</b>, usa l'URL di un workflow “Posta in un canale quando
+        viene ricevuta una richiesta webhook” (Teams → canale → <i>Workflows</i>); l'URL di un
+        classico incoming webhook funziona ugualmente.</p>
+        <p><b>Template personalizzati.</b> Con il formato <i>Personalizzato</i> fornisci body e
+        content type. Questi placeholder vengono sostituiti; tutto il resto è inviato
+        verbatim:</p>
+        <table>
+          <thead><tr><th>Placeholder</th><th>Contiene</th></tr></thead>
+          <tbody>
+            <tr><td><code>{{subject}}</code> / <code>{{body}}</code></td><td>l'oggetto
+            dell'evento e il testo di dettaglio</td></tr>
+            <tr><td><code>{{severity}}</code> / <code>{{severity_upper}}</code></td><td>
+            <code>info</code>, <code>warning</code> o <code>critical</code></td></tr>
+            <tr><td><code>{{facts}}</code> / <code>{{facts_json}}</code></td><td>il breve
+            riepilogo UPS/host, come righe di testo o come oggetto JSON</td></tr>
+            <tr><td><code>{{status_json}}</code></td><td>lo snapshot completo di
+            <code>/api/status</code> come JSON</td></tr>
+            <tr><td><code>{{timestamp}}</code> / <code>{{version}}</code></td><td>l'ora
+            dell'evento (UTC) e la versione dell'appliance</td></tr>
+          </tbody>
+        </table>
+        <p>È una semplice sostituzione, non un linguaggio di espressioni: niente cicli e
+        niente condizionali. Quando il content type contiene <code>json</code>, i valori
+        vengono escapati in JSON automaticamente, quindi una virgoletta in un testo di evento
+        non può produrre un payload malformato.</p>
+        <p><b>Header di autenticazione</b> (opzionale, per webhook) — nome e valore di un
+        header aggiuntivo, ad esempio <code>Authorization: Bearer …</code> per un topic
+        ntfy protetto o un header API-key. Il valore è trattato come segreto: non viene mai
+        restituito dall'API e resta invariato quando salvi senza reinserirlo.</p>
+        <p><b>Header extra</b> (opzionale, per webhook) — un header per riga, scritto come
+        <code>Nome: Valore</code>, per target che hanno bisogno di più dell'unico header sopra.
+        Nextcloud Talk è il caso tipico: oltre alla sua autorizzazione Basic si aspetta
+        <code>OCS-APIRequest: true</code> e <code>Accept: application/json</code>. Questi
+        header sovrascrivono ciò che il formato scelto imposta, ma mai l'header di
+        autenticazione sopra. Le righe che non sono un header valido vengono ignorate.</p>
+        <div class="callout warn">
+          <span><b>Nessun segreto qui.</b> A differenza dell'header di autenticazione sopra,
+          questi valori sono salvati e mostrati in chiaro e vengono restituiti dall'API di
+          configurazione. Tutto ciò che è riservato va nel campo <b>Valore</b> sopra.</span>
+        </div>
+        <p><b>Invia dal livello</b> — quali eventi vengono inviati. Tutto ciò che è sotto il
+        livello selezionato viene comunque scritto nel registro eventi, semplicemente non
+        attiva un messaggio:</p>
+        <table>
+          <thead><tr><th>Livello</th><th>Include ad esempio</th></tr></thead>
+          <tbody>
+            <tr><td>Tutti gli eventi (incluso info)</td><td>in più “rete ripristinata”,
+            “connessione di rete ripristinata”</td></tr>
+            <tr><td>Avvisi e critici (default)</td><td>blackout, UPS irraggiungibile,
+            auto-test fallito, spegnimento inviato/annullato</td></tr>
+            <tr><td>Solo critici</td><td>spegnimento attivato, spegnimento FALLITO</td></tr>
+          </tbody>
+        </table>
+        <div class="callout info">
+          <span>Da questa versione il default è <b>Avvisi e critici</b> — i messaggi di puro
+          tutto-ok non arrivano più. Imposta il filtro su <b>Tutti gli eventi</b> per il
+          comportamento precedente.</span>
+        </div>
+        <p>Il pulsante <b>“Invia notifica di test”</b> invia un messaggio di esempio con i
+        valori attualmente inseriti — non serve salvare prima, e il filtro di livello non si
+        applica. Riporta il risultato HTTP del target, quindi un URL sbagliato emerge
+        subito.</p>
+        <p class="muted">Le notifiche sono best-effort: un target irraggiungibile viene
+        registrato e non influenza mai la logica di spegnimento.</p>
+      </section>
+
+      <section class="card" id="updates">
+        <h2 class="sec"><span class="n">10</span> Aggiornamenti e gestione</h2>
+        <p>Gli aggiornamenti si caricano direttamente nella web UI; un servizio companion
+        minimale e privilegiato li applica (l'app stessa resta senza privilegi). Dopo
+        l'upload, l'aggiornamento viene tipicamente applicato in pochi secondi. La web UI
+        permette anche di esportare/importare la configurazione, impostare server NTP e
+        fuso orario, e vedere/svuotare il registro eventi.</p>
+        <p>L'interfaccia web si aggiorna da sola in modo affidabile dopo un update: la
+        pagina non viene mai messa in cache, e ogni script e stylesheet che carica porta
+        un'impronta che cambia con il file — un browser non può quindi continuare a servire
+        la versione precedente. Se una scheda era aperta durante il riavvio del servizio,
+        in alto compare un avviso con un pulsante <b>“Ricarica”</b>; finché non lo usi,
+        quella scheda esegue ancora la vecchia interfaccia.</p>
+        <p class="muted">Nota: il fuso orario (sezione Sistema, es.
+        <code>Europe/Rome</code>) andrebbe impostato, altrimenti il container gira in UTC.
+        L'<b>orario di avvio dell'auto-test</b> è interpretato in quest'ora locale; dopo aver
+        impostato il fuso orario il servizio si riavvia brevemente.</p>
+        <h3>Auto-test delle connessioni di destinazione</h3>
+        <p>L'appliance verifica da sola se per host il token API e il suo privilegio di
+        power-management funzionano ancora — <code>Sys.PowerMgmt</code> su Proxmox VE,
+        <code>Sys.PowerManagement</code> su un Backup Server — così una credenziale
+        scaduta o revocata emerge molto prima che un blackout ne abbia bisogno. Due
+        impostazioni nella sezione <i>Sistema</i> lo controllano: un <b>orario di
+        avvio</b> (ora piena) e un <b>intervallo</b> da 15 minuti fino a 24 ore. Insieme
+        definiscono orari fissi del giorno: avvio 09:00 con intervallo di 6 ore significa
+        09:00, 15:00, 21:00 e 03:00. Il default è giornaliero.</p>
+        <p>Un auto-test fallito viene sempre registrato e notificato. Uno riuscito viene
+        scritto nel registro eventi al massimo una volta al giorno (e ogni volta che si
+        riprende da un fallimento), così un intervallo breve non seppellisce il registro.
+        Mentre un UPS è a batteria l'auto-test viene saltato del tutto — durante un blackout
+        il countdown ha priorità. Un riavvio non ripete un auto-test già eseguito nello slot
+        corrente.</p>
+        <p>Se anche quell'unica riga al giorno è troppo — un solo amministratore che sa
+        quando un token è cambiato — togli la spunta a <b>“Registra gli auto-test riusciti
+        nel registro eventi”</b>. Sparisce solo la riga verde di routine; il controllo
+        continua a girare all'intervallo configurato, i fallimenti sono registrati e
+        notificati come prima, il journal di sistema registra comunque ogni esecuzione, e il
+        verdetto per host sulla dashboard non ne risente. Il controllo cluster condivide la
+        pianificazione dell'auto-test e la sua riga di log, quindi anche il
+        <code>Cluster &lt;nome&gt;: ok</code> per cluster tace con essa; ogni
+        <em>avviso</em> cluster viene riportato come prima. Due righe verdi sopravvivono
+        comunque all'interruttore: un'esecuzione richiesta da te, e quella che riporta una
+        ripresa da un fallimento.</p>
+        <div class="callout info">
+          <span>Non esiste volutamente un intervallo settimanale o mensile. L'auto-test
+          esiste per intercettare una credenziale che si è rotta dall'ultimo blackout — un
+          token cambiato, una nuova regola firewall, una scheda di rete UPS sostituita — e
+          niente di tutto questo segue un calendario. Se il problema è il registro eventi,
+          silenzia la riga anziché il controllo; se vuoi lo stato monitorato attivamente,
+          interroga <code>/api/health</code> dal tuo sistema di monitoraggio (vedi
+          <a href="#monitoring">Monitoraggio</a>), che copre anche il caso dell'appliance che
+          non gira affatto.</span>
+        </div>
+        <p><b>Salvare le impostazioni non attiva un auto-test</b> — è voluto, così
+        modificare la configurazione non martella mai l'API Proxmox. Dopo aver cambiato un
+        token o spuntato l'opzione cluster, usa <b>“Esegui auto-test ora”</b> sulla
+        dashboard per vedere subito il risultato invece di aspettare lo slot successivo.
+        Scrive sempre il suo risultato nel registro eventi, ignorando il limite di una
+        volta al giorno, e viene rifiutato mentre un UPS è a batteria.</p>
+        <p>Per gli host marcati come <a href="#cluster">membri di cluster</a> l'auto-test
+        controlla anche il cluster una volta: privilegi del token, quorum, flag di
+        manutenzione Ceph, stato di arm di HA e shutdown policy del datacenter. Un cluster
+        sano viene registrato come <i>“Cluster &lt;nome&gt;: ok”</i>, così “controllato e
+        a posto” è distinguibile da “mai controllato”. Nota il rovescio: <b>senza la spunta
+        cluster niente di tutto questo gira</b>, e il log mostra allora solo la semplice
+        riga per host.</p>
+        <p>Il risultato viene conservato anche <b>per host</b>: la tabella host della
+        dashboard mostra il problema nella sua colonna errori anche quando nulla è stato
+        spento, e <a href="#monitoring">/api/health</a> conta quanti target hanno superato
+        l'ultimo controllo.</p>
+        <h3>Aggiornamento dalla versione 2.x alla 3.x</h3>
+        <p>Scarica il pacchetto della release corrente
+        (<code>pve-usv-&lt;versione&gt;.tar.gz</code>) dalla
+        <a href="https://github.com/ffind-dev/pve-ups/releases" target="_blank"
+        rel="noopener">pagina releases di GitHub</a> e caricalo nella web UI sotto
+        “Aggiornamento” — la configurazione è interamente preservata. Due cambi di
+        comportamento: le notifiche e-mail non ci sono più (una voce SMTP configurata in
+        precedenza viene rimossa automaticamente al prossimo salvataggio;
+        il webhook resta), e i testi di eventi/webhook sono in inglese dalla 3.0.0.</p>
+        <h3 id="docker">Deployment Docker</h3>
+        <p>Come alternativa all'installazione LXC, a ogni release viene pubblicata
+        un'immagine precompilata su
+        <a href="https://github.com/ffind-dev/pve-ups/pkgs/container/pve-ups"
+        target="_blank" rel="noopener"><code>ghcr.io/ffind-dev/pve-ups</code></a>.
+        L'immagine è multi-arch — <code>linux/amd64</code>, <code>linux/arm64</code> e
+        <code>linux/arm/v7</code> — quindi gira anche su un Raspberry Pi 3/4/5 con OS a
+        64 o 32 bit; Docker sceglie la variante giusta. Un dispositivo così piccolo
+        consuma poco dalla batteria e resta acceso mentre gli host che protegge si
+        spengono. Un
+        <code>docker-compose.example.yml</code> pronto è nel
+        <a href="https://github.com/ffind-dev/pve-ups" target="_blank"
+        rel="noopener">repository</a>; l'essenziale:</p>
+<pre><code>services:
+  pve-ups:
+    image: ghcr.io/ffind-dev/pve-ups:latest
+    container_name: pve-ups
+    restart: unless-stopped
+    ports: ["8080:8080"]
+    environment:
+      - TZ=Europe/Rome
+    volumes:
+      - pve-ups-config:/etc/pve-usv    # config.yaml (segreti, 0600)
+      - pve-ups-data:/var/lib/pve-usv  # events.db, history.db + stato engine
+volumes:
+  pve-ups-config:
+  pve-ups-data:</code></pre>
+        <p>Poi apri <code>http://&lt;docker-host&gt;:8080</code> e segui la stessa
+        procedura guidata dell'LXC. Configurazione e registro eventi persistono tramite i
+        due volumi montati, quindi <code>docker compose down</code> non perde nulla.</p>
+        <p>Dato che nell'immagine non c'è un processo companion privilegiato (niente
+        systemd), due cose funzionano diversamente: gli aggiornamenti si applicano
+        scaricando un nuovo tag dell'immagine e ricreando il container
+        (<code>docker compose pull &amp;&amp; docker compose up -d</code>) invece
+        dell'uploader in-app, e NTP/fuso orario sono responsabilità dell'host Docker o
+        dell'orchestratore anziché essere impostati dalla procedura guidata — entrambe le
+        aree sono nascoste nella web UI. Tutto il resto (polling UPS, spegnimento Proxmox,
+        soglie, webhook, auto-test) è identico.</p>
+        <div class="callout info">
+          <span>Imposta <code>TZ</code> sul container. L'<b>orario di avvio
+          dell'auto-test</b> è interpretato nell'ora locale del container, e senza
+          <code>TZ</code> il container gira in UTC — il fuso orario non si può impostare
+          dalla web UI in modalità Docker.</span>
+        </div>
+        <div class="callout warn">
+          <span>Se la tua rete ricade in <code>172.17.0.0/16</code> –
+          <code>172.31.0.0/16</code>, sposta l'address pool di default di Docker
+          <b>prima</b> di avviare il container — Docker reclama quel range per i suoi
+          bridge, e il container non raggiungerebbe più un UPS o un host Proxmox al suo
+          interno. In <code>/etc/docker/daemon.json</code>, ad es.
+          <code>{"bip":"10.210.0.1/24","default-address-pools":[{"base":"10.211.0.0/16","size":24}]}</code>,
+          poi <code>systemctl restart docker</code>.</span>
+        </div>
+      </section>
+
+      <section class="card" id="faq">
+        <h2 class="sec"><span class="n">11</span> Risoluzione dei problemi</h2>
+        <h3>Un Backup Server riporta “Authentication failed (token invalid?)”</h3>
+        <p>Quasi sempre è il <b>tipo</b> sbagliato sulla voce host. Proxmox VE e Proxmox
+        Backup Server usano schemi di token diversi, e PBS non riconosce affatto quello PVE —
+        quindi la richiesta viene rifiutata prima ancora che il token venga guardato, per
+        quanto valido sia. Imposta il tipo su <i>Proxmox Backup Server</i> e riprova. Se il
+        test poi riesce ma avverte che <code>Sys.PowerManagement</code> non si è potuto
+        confermare, l'ACL manca sull'utente, sul token, o su entrambi — vedi
+        la <a href="#token-pbs">sezione 4</a>. Controlla anche che l'URL API usi la porta
+        <b>8007</b>.</p>
+        <h3>L'aggiornamento resta in coda</h3>
+        <p>Se un aggiornamento caricato resta su “⏳ In coda”, il drainer della coda non è
+        attivo su quest'istanza. Succede una volta su macchine aggiornate da una versione
+        molto vecchia. Esegui una volta dentro il container (abilita il servizio in
+        permanenza):</p>
+<pre><code>pct exec &lt;CTID&gt; -- systemctl start pve-usv-agent.service
+# o direttamente dentro il container:
+systemctl start pve-usv-agent.service</code></pre>
+        <h3>Cluster: serve un token separato per nodo?</h3>
+        <p>No. Utenti, token API e ACL sono salvati a livello datacenter
+        (<code>/etc/pve</code>), quindi un token creato una volta su un qualsiasi nodo vale
+        su tutti — eseguire i comandi della <a href="#token">sezione 4</a> una seconda
+        volta riporterebbe solo che l'utente esiste già. Aggiungi ogni nodo con lo
+        <i>stesso</i> token ID e segreto, ma con il suo URL API.</p>
+        <h3>UPS irraggiungibile / allarme</h3>
+        <p>Controlla indirizzo, credenziali e il firewall tra l'appliance e la sorgente
+        UPS. “Testa UPS” nella procedura guidata mostra la causa esatta — apri
+        <b>Dettagli per oggetto</b> per vedere quale oggetto è fallito e perché (vedi
+        <a href="#snmp">Sorgenti UPS</a>). Una sola perdita di comunicazione non spegne
+        mai nulla (fail-safe).</p>
+        <h3>Una soglia non scatta mai</h3>
+        <p>Non ogni dispositivo riporta ogni valore. Esegui “Testa UPS”: se il dispositivo
+        non pubblica l'autonomia residua o la carica, il test lo dice sopra la tabella
+        oggetti, e la soglia corrispondente resta perennemente inefficace. Usa invece “A
+        batteria per più di (s)” — quel timer gira sull'orologio proprio
+        dell'appliance.</p>
+        <p>Su un UPS SNMP, controlla anche l'impostazione <b>MIB</b>. Molte schede
+        pubblicano nel loro MIB del produttore ciò che tralasciano dall'RFC 1628;
+        <b>Automatico</b> lo trova da solo, quindi vale la pena guardarci solo se il MIB è
+        stato fissato a mano (vedi <a href="#snmp">Sorgenti UPS</a>).</p>
+        <h3>Un UPS APC non funziona / non risponde nulla di utile</h3>
+        <p>Lascia l'impostazione <b>MIB</b> su <b>Automatico</b> — il MIB APC PowerNet viene
+        allora usato da solo. Serve perché Schneider supporta RFC 1628 solo sulle Network
+        Management Card 2 (AP9630/AP9631/AP9635) dal firmware
+        <code>sumx</code>/<code>sy</code> v5.1.7 in poi, mentre le schede NMC1 più
+        vecchie (AP9617/AP9618/AP9619) non lo implementano affatto. “Testa UPS” mostra
+        quale MIB è stato usato e quali oggetti ciascuno ha risposto.</p>
+        <h3>Un UPS CyberPower riporta “nessuna risposta” anche se la scheda è
+        raggiungibile</h3>
+        <p>Esegui “Testa UPS”. Se il suo riepilogo dice che il polling regolare non ha
+        avuto risposta mentre i valori rispondono uno alla volta, la scheda non gestisce una
+        richiesta di più valori insieme: imposta il <b>MIB</b> su <b>CyberPower</b>, che
+        viene letto un valore per richiesta. Se la scheda non risponde affatto, controlla
+        community/credenziali e che SNMP sia abilitato per l'IP dell'appliance sulla
+        scheda.</p>
+        <h3>NUT: “does not know a UPS with that name” o non risponde nulla</h3>
+        <p>Il nome dell'UPS deve corrispondere al nome di sezione nel
+        <code>ups.conf</code> di upsd; <code>upsc -l &lt;host&gt;</code> elenca i nomi
+        validi. Se non risponde affatto nulla, molto probabilmente upsd è in ascolto solo su
+        localhost — la sua direttiva <code>LISTEN</code> deve coprire l'interfaccia a cui
+        l'appliance si connette, e la TCP&nbsp;3493 deve essere aperta.</p>
+        <h3>SNMPv3 con crittografia fallisce</h3>
+        <p>Se un utente authPriv riporta <i>“Ciphering services not available”</i> o il test
+        punta a crittografia mancante, all'appliance manca il pacchetto Python
+        <code>cryptography</code>, che fornisce i cifrari DES/AES. Le versioni fino alla
+        3.0.0 non lo installavano. <b>Aggiornare l'appliance risolve</b> — il pacchetto
+        arriva automaticamente. Due cose da sapere: riguarda ogni protocollo di privacy,
+        quindi passare da DES ad AES non aiuta, e <b>authNoPriv</b> (autenticazione
+        MD5/SHA, privacy “nessuna”) continua a funzionare nel frattempo, perché
+        l'autenticazione non ha bisogno di quei cifrari.</p>
+        <h3>Nomi interni: <code>pve-usv</code></h3>
+        <p>Il nome del prodotto è PVE-UPS, ma servizio e percorsi si chiamano
+        tecnicamente ancora <code>pve-usv</code> — ad es.
+        <code>systemctl status pve-usv</code>, <code>/etc/pve-usv/config.yaml</code> e
+        <code>/var/lib/pve-usv/</code>. È intenzionale e mantiene gli aggiornamenti delle
+        installazioni esistenti compatibili.</p>
+      </section>
+
+      <section class="card" id="changelog">
+        <h2 class="sec"><span class="n">12</span> Changelog (in breve)</h2>
+        <p class="muted">Punti salienti semplificati, visibili all'utente. Il changelog
+        tecnico completo vive nel
+        <a href="https://github.com/ffind-dev/pve-ups/blob/main/CHANGELOG.md"
+        target="_blank" rel="noopener">repository GitHub</a>.</p>
+
+        <div class="cl-ver">4.3.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Scheda storico</b>: autonomia residua, carico e carica di ogni UPS nel
+          tempo, con blackout, trigger e marcatori del registro eventi, zoom, un periodo
+          libero, una tabella blackout ed export CSV. Dopo un aggiornamento resta spenta
+          finché non la attivi in <i>Impostazioni → Sistema</i> — vedi
+          <a href="#history">Storico</a>.</li>
+          <li><b>“Ferma prima tutti i guest a livello cluster” senza Ceph</b>: a ogni
+          guest viene chiesto di spegnersi insieme prima che il primo nodo scenda, invece
+          che nodo per nodo in ordine di startup — per cluster dove questo richiede più di
+          quanto duri la batteria. Vedi <a href="#cluster-gueststop">l'arresto
+          guest</a>.</li>
+          <li><b>Schede di rete CyberPower</b> lette tramite il loro MIB, anche schede
+          senza RFC 1628. “Automatico” su SNMP v2c non fallisce più su schede che
+          rispondono a un oggetto mancante con un errore.</li>
+          <li><b>L'immagine Docker gira su Raspberry Pi</b> (64 e 32 bit).</li>
+        </ul>
+
+        <div class="cl-ver">4.2.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Un webhook che hai spento non deve più avere un URL.</b> Un target di
+          notifica preparato a metà viene conservato come bozza; solo uno <em>attivo</em>
+          insiste ancora su dove postare.</li>
+          <li><b>I webhook possono portare header extra.</b> Target che ne richiedono più
+          di uno — come Nextcloud Talk, che si aspetta <code>OCS-APIRequest</code> e
+          <code>Accept</code> oltre alla sua autorizzazione — ora funzionano senza un proxy
+          davanti.</li>
+          <li><b>I password manager possono di nuovo compilare il form di login.</b> La
+          pagina di accesso è un form vero con campo username, che è ciò su cui l'autofill
+          inline fa leva; i campi token e password nelle impostazioni sono marcati perché
+          un manager li lasci stare.</li>
+          <li><b>Gli auto-test riusciti si possono tenere fuori dal registro eventi</b>
+          senza testare le credenziali meno spesso. Fallimenti, riprese ed “Esegui
+          auto-test ora” riportano sempre.</li>
+        </ul>
+
+        <div class="cl-ver">4.1.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Un UPS che riporta un “tempo a batteria” vecchio non spegne più tutto in
+          una volta.</b> L'appliance ora misura il blackout sul proprio orologio invece di
+          credere al contatore riportato dal dispositivo — un contatore che lo standard
+          definisce solo <em>mentre</em> l'UPS è a batteria e che molte schede conservano
+          dall'ultimo blackout. Il timer in corso sopravvive a un riavvio del
+          servizio.</li>
+          <li><b>Un UPS che risponde senza dire da dove viene la sua alimentazione è un
+          allarme, non un tutto-ok.</b> Per SNMP e NUT allo stesso modo, una lettura così
+          non azzera più un countdown in corso nel mezzo di un blackout — e non conta mai
+          nemmeno come silenzio, quindi “Spegnimento su pura perdita di comunicazione” non
+          si applica a un dispositivo che sta rispondendo.</li>
+          <li><b>Uno spegnimento che fallisce viene ritentato</b> — tre tentativi invece di
+          uno, così un'API Proxmox occupata o una connessione caduta non lasciano più una
+          macchina accesa mentre la dashboard la riporta come gestita.</li>
+          <li><b>Un cluster si porta dietro solo i nodi che lo hanno chiesto</b>, e i tre
+          interruttori cluster vengono letti una volta per cluster anziché dal nodo che è
+          capitato a scattare per primo. Vedi la <a href="#cluster">sezione 6</a>.</li>
+          <li>Inoltre: le consegne webhook fallite vengono riportate invece di fallire
+          in silenzio, un dry-run attivo lo dice sulla dashboard, le voci che non possono
+          fare il loro lavoro (un host senza token, un UPS senza indirizzo) vengono
+          segnalate, e nessuna credenziale può raggiungere l'endpoint di stato
+          pubblico.</li>
+        </ul>
+
+        <div class="cl-ver">4.0.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>I cluster Proxmox VE vengono preparati prima dello spegnimento</b>
+          <span class="pill warn">Beta</span>. Marca un nodo come membro di cluster e
+          PVE-UPS disarma l'HA manager una volta per cluster — e, con l'opzione Ceph, ferma
+          ogni guest e poi imposta i flag di manutenzione — prima che il primo nodo scenda.
+          Un pulsante <b>“Ripristina cluster”</b> sulla dashboard lo annulla dopo. Richiede
+          Proxmox VE 9.2 o più recente ed è opt-in ovunque; vedi la
+          <a href="#cluster">sezione 6</a>.</li>
+          <li><b>Un cluster viene spento come unità</b> (attivo di default): un nodo che
+          diventa dovuto si porta dietro l'intero cluster, nell'ordine configurato, invece
+          di lasciare mezzo cluster in piedi con HA disarmato. Si può disattivare.</li>
+          <li><b>Più webhook invece di uno</b>, ciascuno con formato, filtro e pulsante di
+          test propri — più nuovi formati per <b>Slack</b>, <b>Discord</b> e <b>ntfy</b>
+          e un <b>template personalizzato</b>. Vedi la <a href="#webhook">sezione 9</a>.</li>
+          <li><b>L'auto-test è più utile</b>: gira automaticamente dopo che l'appliance si
+          riarma, “Esegui auto-test ora” lo avvia sul momento, e rinominare un host non
+          scarta più il suo token API. Vedi la <a href="#token">sezione 4</a>.</li>
+        </ul>
+
+        <div class="cl-ver">3.5.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Anche un Proxmox Backup Server può ora essere spento.</b> Ogni voce host
+          ha un <b>tipo</b> — Proxmox VE o Proxmox Backup Server — che decide lo schema di
+          token e il privilegio verificato. Inserire un PBS falliva come token non valido
+          qualunque cosa si facesse; vedi la <a href="#token-pbs">sezione 4</a> per la
+          configurazione, incluso perché <b>sconsigliamo</b> di collegare PBS alla stessa
+          istanza in produzione.</li>
+          <li>Per un Backup Server il <b>campo “Nodo” è solo un'etichetta</b>. PBS ignora
+          il nome del nodo nel path API, quindi lì niente deve corrispondere
+          all'hostname.</li>
+          <li><b>Gli host vengono ora spenti a stadi</b> invece che strettamente uno dopo
+          l'altro: le voci che condividono un “Ordine” vengono comandate insieme, l'host
+          proprio dell'appliance va sempre per ultimo, e ogni comando ha una deadline
+          rigida. Una macchina che smette di rispondere non può più ritardare le altre né
+          il countdown della batteria — vedi la <a href="#logik">sezione 6</a>. La
+          procedura guidata mostra la sequenza risultante dal vivo sotto la lista host,
+          così si vede quali host vanno insieme e quali seguono.</li>
+          <li>Il <b>risultato dell'auto-test viene conservato per host</b>: un token rotto
+          ora appare nella tabella host della dashboard e in
+          <a href="#monitoring">/api/health</a>, non solo nel registro eventi.</li>
+        </ul>
+
+        <div class="cl-ver">3.4.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Il webhook ora parla la lingua del suo target</b>: oltre al precedente
+          JSON di stato può postare una card <b>Microsoft Teams</b> o un breve stato in
+          <b>testo semplice</b>. Vedi <a href="#webhook">Notifiche webhook</a>.</li>
+          <li>Un nuovo <b>filtro di livello</b> decide quali eventi vengono inviati
+          affatto. Il default è <b>Avvisi e critici</b> — i messaggi di puro tutto-ok non
+          arrivano più; imposta il filtro su <b>Tutti gli eventi</b> per il comportamento
+          precedente.</li>
+          <li><b>“Invia notifica di test”</b> invia un messaggio di esempio con i valori
+          attualmente inseriti — senza salvare prima — e riporta il risultato HTTP del
+          target.</li>
+          <li>Uno spegnimento eseguito o ritirato (<code>shutdown sent</code> /
+          <code>shutdown aborted</code>) conta come <b>avviso</b> invece che info, e viene
+          mostrato in ambra nel registro eventi.</li>
+        </ul>
+
+        <div class="cl-ver">3.3.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Gli UPS APC sono supportati correttamente</b>: un UPS SNMP può ora essere
+          letto tramite un <b>MIB del produttore</b> invece di RFC 1628, il primo dei quali
+          è <b>APC PowerNet</b>. Questo copre schede APC che RFC 1628 non riesce a
+          raggiungere affatto — le NMC1 più vecchie (AP9617/AP9618/AP9619) — oltre alle
+          schede NMC2 con firmware sotto sumx/sy v5.1.7. Vedi
+          <a href="#snmp">Sorgenti UPS</a>.</li>
+          <li>La nuova impostazione <b>MIB</b> ha default <b>Automatico</b> e non richiede
+          attenzione: le voci UPS esistenti la ricevono con l'aggiornamento, e un UPS passa
+          al suo MIB del produttore da solo appena risponde lì.</li>
+          <li>Le schede che supportano entrambi ottengono <b>letture più accurate</b>:
+          PowerNet riporta l'autonomia residua in centesimi di secondo invece che in minuti
+          interi, e marca un <b>auto-test</b> come tale — RFC 1628 non sa distinguerlo da
+          un blackout vero.</li>
+          <li><b>Il test UPS si spiega da solo</b>: in modalità Automatico elenca entrambi
+          i MIB, dice su quale si è assestato e perché, e la dashboard nomina il MIB in
+          uso.</li>
+        </ul>
+
+        <div class="cl-ver">3.2.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Gli UPS senza scheda di rete</b> possono ora essere monitorati: una voce
+          UPS viene letta via SNMP come prima, oppure tramite un <b>server NUT</b> — che è
+          come si raggiungono gli UPS USB e seriali. I due tipi si possono mescolare in
+          un'istanza. Vedi <a href="#snmp">Sorgenti UPS</a>.</li>
+          <li>PVE-UPS resta un client NUT strettamente in sola lettura — niente
+          <code>upsmon</code>, niente script di spegnimento, niente file di config. La
+          decisione resta nell'appliance.</li>
+          <li><b>Il test UPS nomina le soglie morte</b>: se un dispositivo non riporta né
+          autonomia residua né carica, il test lo dice invece di lasciare una soglia che
+          silenziosamente non scatta mai.</li>
+          <li>Un server NUT che serve dati obsoleti (il suo driver è crashato) conta come
+          irraggiungibile — un allarme, mai uno spegnimento, e mai scambiato per “su
+          rete”.</li>
+        </ul>
+
+        <div class="cl-ver">3.1.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>SNMPv3 con crittografia ora funziona.</b> Un utente authPriv falliva con
+          “Ciphering services not available” fino alla 3.0.0 inclusa — una dipendenza
+          mancante, che l'aggiornamento installa strada facendo. Vedi
+          <a href="#faq">Risoluzione dei problemi</a>.</li>
+          <li><b>Deployment Docker</b> come alternativa all'LXC: un'immagine precompilata
+          viene pubblicata a ogni release. Vedi <a href="#docker">Deployment
+          Docker</a>.</li>
+          <li><b>Test SNMP con dettagli per oggetto</b>: ogni oggetto RFC 1628 con il suo
+          valore o il motivo per cui manca, così credenziali sbagliate, una porta bloccata
+          e un UPS incompleto si distinguono a colpo d'occhio.</li>
+          <li><b>Auto-test con intervallo</b>: l'orario del giorno diventa un orario di
+          avvio, con ripetizione da 15 minuti fino a 24 ore. Le installazioni esistenti
+          mantengono la loro cadenza giornaliera.</li>
+        </ul>
+
+        <div class="cl-ver">3.0.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Prima release pubblica</b> su GitHub con il nome <b>PVE-UPS</b>
+          (nomi di servizio/percorsi restano <code>pve-usv</code> internamente).</li>
+          <li><b>Web UI bilingue</b>: inglese (default) e tedesco, scelta automaticamente
+          dalla lingua del browser; manuale utente in entrambe le lingue.</li>
+          <li>Registro eventi, messaggi webhook e messaggi API uniformemente in
+          <b>inglese</b>.</li>
+          <li><b>Notifiche e-mail rimosse</b> — il webhook copre le notifiche; le voci SMTP
+          esistenti vengono scartate automaticamente con l'aggiornamento.</li>
+          <li>Installazione e aggiornamenti direttamente via <b>GitHub releases</b>
+          (installazione one-liner, aggiornamento con upload del pacchetto nella web UI;
+          indolore dalla 2.x).</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    © 2026 Florian Finder · PVE-UPS ·
+    <a href="https://github.com/ffind-dev/pve-ups" target="_blank" rel="noopener">Progetto su GitHub</a> ·
+    <a href="https://github.com/ffind-dev/pve-ups/releases" target="_blank" rel="noopener">Releases</a> ·
+    <a href="https://github.com/ffind-dev/pve-ups/issues" target="_blank" rel="noopener">Segnala un problema</a> ·
+    <a href="https://github.com/ffind-dev/pve-ups/security/policy" target="_blank" rel="noopener">Segnala una vulnerabilità</a>
+    <br><span class="muted">Sviluppato con assistenza AI.</span>
+  </footer>
+
+  <script>
+    // Reuse the app's theme (same localStorage key as app.js).
+    // Toggle order: auto -> light -> dark -> auto.
+    (function () {
+      var KEY = "pve-usv-theme";
+      var root = document.documentElement;
+      var lbl = document.getElementById("themeLbl");
+      var names = { auto: "Auto", light: "Chiaro", dark: "Scuro" };
+      function apply(t) {
+        if (t !== "light" && t !== "dark") t = "auto";
+        root.setAttribute("data-theme", t);
+        if (lbl) lbl.textContent = names[t];
+      }
+      apply(localStorage.getItem(KEY) || "auto");
+      document.getElementById("themeBtn").addEventListener("click", function () {
+        var cur = localStorage.getItem(KEY) || "auto";
+        var next = cur === "auto" ? "light" : cur === "light" ? "dark" : "auto";
+        localStorage.setItem(KEY, next);
+        apply(next);
+      });
+    })();
+  </script>
+</body>
+</html>

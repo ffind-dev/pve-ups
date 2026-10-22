@@ -132,8 +132,21 @@ def test_source_type_keys_exist_in_both_dictionaries():
     assert re.findall(r'\["([a-z]+)"', block.group(1)) == kinds
 
 
-def test_manual_deep_links_resolve_in_both_manuals():
-    """Every anchor the UI deep-links to must exist in manual.html *and* handbuch.html.
+def _manual_files() -> set[str]:
+    """Every manual a shipped dictionary can point at (its `manual.file` value)."""
+    files = set()
+    for fname in DICTS:
+        m = re.search(
+            r'"manual\.file"\s*:\s*"([^"]+)"',
+            (WEB / "i18n" / fname).read_text(encoding="utf-8"),
+        )
+        assert m, f"{fname}: no manual.file entry"
+        files.add(m.group(1))
+    return files
+
+
+def test_manual_deep_links_resolve_in_every_manual():
+    """Every anchor the UI deep-links to must exist in every shipped manual.
 
     The links are built from data-manual attributes (static markup and, for the per-type
     host hint, from app.js), so a renamed section would silently land readers at the top
@@ -148,7 +161,7 @@ def test_manual_deep_links_resolve_in_both_manuals():
         anchors |= set(re.findall(r'"([a-z0-9-]+)"', line))
     assert "token-pbs" in anchors and "token-pve" in anchors, "host hint links not detected"
 
-    for manual in ("manual.html", "handbuch.html"):
+    for manual in sorted(_manual_files()):
         have = set(re.findall(r'id="([a-z0-9-]+)"', (WEB / manual).read_text(encoding="utf-8")))
         missing = sorted(a for a in anchors if a not in have)
         assert not missing, f"{manual} has no section for: {missing}"
