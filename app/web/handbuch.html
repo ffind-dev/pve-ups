@@ -167,7 +167,7 @@
   <header class="topbar">
     <span class="brand">
       <svg class="mark icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3z"/></svg>
-      PVE-UPS <span class="sub">Benutzerhandbuch · v4.3.0</span>
+      PVE-UPS <span class="sub">Benutzerhandbuch · v4.4.0</span>
     </span>
     <span class="spacer"></span>
     <a class="btn" href="https://github.com/ffind-dev/pve-ups" target="_blank"
@@ -548,6 +548,16 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
           weiterhin erreichbare Quelle ist aber besser.</span>
         </div>
 
+        <h3>Leistung in Watt</h3>
+        <p>Dashboard und Verlauf zeigen die Ausgangsleistung einer USV in Watt, wo sie
+        bekannt ist. Ein NUT-Treiber, der <code>ups.realpower</code> veröffentlicht, liefert
+        den Messwert. Viele USB-Geräte melden nur ihre Last in Prozent; dann wird die
+        Leistung als Last × Nennleistung <b>geschätzt</b> und als <b>≈ 420 W</b> angezeigt.
+        Die Nennleistung kommt aus dem optionalen Feld <b>„Nennleistung (W)"</b> der
+        USV-Karte (die Wirkleistung vom Typenschild oder Datenblatt, nicht die VA-Angabe)
+        oder, wenn es leer ist, aus <code>ups.realpower.nominal</code>. Über SNMP liefert
+        sie nur das Feld. Der Wert ist reine Information: Kein Auslöser liest ihn.</p>
+
         <h3>Testergebnis lesen</h3>
         <p>Unter der Ergebniszeile bietet <b>„USV testen"</b> die <b>Details je Objekt</b> —
         jedes Objekt einzeln abgefragt, mit seinem Wert oder dem Grund, warum es fehlt. Der
@@ -687,6 +697,23 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
         Cluster zusätzlich Ceph auf den eigenen Knoten, lesen Sie danach
         <a href="#cluster-ceph">Hyperkonvergente Cluster (Ceph)</a> — dieser Teil ist ein
         erheblich größerer Eingriff, mit eigenen Rechten.</p>
+        <p><b>Welcher Aufbau liegt vor?</b> Zeile suchen, dann nur den passenden Teil lesen:</p>
+        <table>
+          <thead><tr><th>Ihr Cluster</th><th>Einstellung</th><th>Weiter bei</th></tr></thead>
+          <tbody>
+            <tr><td>Alle Knoten hängen an derselben Stromversorgung und fallen gemeinsam aus</td>
+                <td>„Gesamten Cluster als Einheit herunterfahren" (Vorgabe)</td>
+                <td><a href="#cluster-unit">Als Einheit</a></td></tr>
+            <tr><td>Knoten an verschiedenen USVs, kein Ceph, und HA soll einen einzelnen
+                ausfallenden Knoten auffangen</td>
+                <td>„Als Einheit" aus</td>
+                <td><a href="#cluster-unit">Als Einheit</a></td></tr>
+            <tr><td>Über zwei Räume mit je eigener USV verteilt, dazu eine Quorum-Stimme an einem
+                dritten Standort</td>
+                <td>Ein <b>Standort</b> je Knoten</td>
+                <td><a href="#cluster-sites">Zwei Räume</a></td></tr>
+          </tbody>
+        </table>
         <p>Auf der Host-Karte im Kasten <i>Proxmox-VE-Cluster</i> „Cluster-Mitglied"
         ankreuzen — bei <b>jedem</b> Knoten des Clusters. Die Zuordnung erfolgt automatisch
         über den per API gelesenen Cluster-Namen — ein zweites Token oder ein eigener
@@ -977,7 +1004,10 @@ pveum acl modify / -token 'ups@pve!shutdown' -role UpsCluster</code></pre>
         Herunterfahren aufgefordert — höchstens acht Anfragen zeitgleich, denn vierzig Gäste
         nacheinander zu fragen kostet je einen Verbindungs-Timeout — und das Ergebnis wird
         <b>überprüft</b>, indem die Gastliste des Clusters neu gelesen wird; aus der Antwort
-        der API wird es nie geschlossen.</p>
+        der API wird es nie geschlossen. Die Liste selbst wird direkt nach dem HA-Disarm neu
+        gelesen: Ein Gast, der seit dem letzten Selbsttest migriert oder gestartet wurde, wird
+        dort gestoppt, wo er jetzt läuft, und einer, der wegen einer laufenden Migration
+        ablehnt, wird erneut gefragt, bis er annimmt.</p>
         <p>Zwei Zeitlimits unter <i>Auslöser</i> steuern das, und sie sind bewusst getrennt:</p>
         <ul>
           <li><b>„Zeitlimit Gast-Shutdown"</b> (Vorgabe <b>300 s</b>) — das Budget für das
@@ -1074,6 +1104,77 @@ pveum role add UpsCluster -privs "Sys.Audit Sys.Console Sys.Modify VM.Audit VM.P
         <p class="muted">„Cluster wiederherstellen" startet die Gäste <b>nicht</b> wieder —
         sie kommen über ihre <code>onboot</code>-Einstellung zurück, wenn die Knoten
         hochfahren.</p>
+
+        <h3 id="cluster-sites">Cluster über zwei Räume (Standort-Failover) <span class="pill warn">Beta</span></h3>
+        <p>Für einen Cluster, der über zwei Räume mit je eigener USV verteilt ist. Verliert
+        <b>ein Raum</b> den Strom, fahren nur seine Knoten herunter und HA übernimmt im anderen
+        Raum — vorbereitet wird nichts. Erst wenn <b>kein vollständiger Raum mehr bleibt</b>
+        (beide gleichzeitig, oder der zweite später), wird der Cluster wie oben beschrieben
+        vorbereitet und komplett heruntergefahren.</p>
+
+        <h4 id="cluster-sites-prereq">Bevor Sie es einschalten</h4>
+        <ul>
+          <li><b>Eine Quorum-Stimme an einem dritten Standort</b>: ein QDevice oder ein
+          Witness-Knoten, und mit Ceph ein Tiebreaker-Monitor (Stretch Mode). Ohne sie verliert
+          der verbleibende Raum das Quorum, HA fenct seine Knoten und Ceph stoppt jeden IO —
+          das kann PVE-UPS nicht ausgleichen.</li>
+          <li><b>PVE-UPS läuft außerhalb des Clusters</b>, an diesem dritten Standort — etwa
+          das <a href="#docker">Docker-Image</a> auf dem QDevice-Host. Im Cluster würde es mit
+          seinem Raum ausfallen. Die Einstellungen erzwingen das.</li>
+          <li><b><code>shutdown_policy=migrate</code></b> in den Datacenter-Optionen, und die
+          Gäste, die umziehen sollen, sind <b>HA-verwaltet</b>. Alle anderen Gäste stoppen
+          einfach mit ihrem Raum.</li>
+          <li><b>Genug Reserve</b>: Jeder Raum kann die HA-Gäste des anderen tragen, und jeder
+          Akku reicht für die Migrationen. Besser die Auslöser „Restlaufzeit unter" und
+          „Ladestand unter" nutzen — sie folgen der höheren Last, sobald ein Raum alles
+          trägt.</li>
+          <li><b>„Wieder scharf nach Netzrückkehr"</b> ist gesetzt, damit ein zurückgekehrter
+          Raum wieder zählt.</li>
+        </ul>
+
+        <h4 id="cluster-sites-when">Was wann passiert</h4>
+        <p>Ein Raum gilt als <i>vollständig</i>, wenn jeder seiner Knoten online ist und jede
+        USV, die ihn versorgt, am Netz ist. Das wird geprüft, wenn eine USV auslöst — live,
+        nicht aus dem Gedächtnis.</p>
+        <table>
+          <thead><tr><th>Situation</th><th>Ergebnis</th></tr></thead>
+          <tbody>
+            <tr><td>Raum A fällt aus, Raum B ist vollständig</td>
+                <td><b>Teilausfall</b>: nur die Knoten von A gehen, HA verschiebt die Gäste nach B</td></tr>
+            <tr><td>Raum A fällt aus, ein Knoten von Raum B ist in Wartung</td>
+                <td><b>Gesamt</b>: Raum B allein ist unvollständig</td></tr>
+            <tr><td>Beide Räume fallen gleichzeitig aus</td>
+                <td><b>Gesamt</b>: Raum B ist auf Batterie, kein Ziel für einen Umzug</td></tr>
+            <tr><td>Raum A fällt aus, Raum B später</td>
+                <td>Erst <b>Teilausfall</b>, dann <b>Gesamt</b> für Raum B</td></tr>
+            <tr><td>Raum A fällt aus, die USV von Raum B ist nicht erreichbar</td>
+                <td><b>Gesamt</b>: unbekannt ist nicht „am Netz"</td></tr>
+            <tr><td>Raum A ist zurück (nach dem Wieder-scharf-Schalten), dann fällt Raum B aus</td>
+                <td><b>Teilausfall</b>, in die andere Richtung</td></tr>
+          </tbody>
+        </table>
+        <p>Im Zweifel ist die Antwort immer der vollständige, vorbereitete Shutdown: Der
+        ausfallende Raum geht ohnehin herunter, und den Rest vorzubereiten ist die Wahl, die
+        keinen Raum unvorbereitet sterben lässt. Ein Raum, der nur auf Batterie geht, ohne
+        schon auszulösen, ändert nichts — dafür gibt es die eingestellte Verzögerung bei kurzen
+        Netzwischern.</p>
+
+        <h4 id="cluster-sites-setup">Einrichtung</h4>
+        <ol>
+          <li>Auf der Host-Karte jedes Knotens unter <b>„Standort (Raum)"</b> seinen Raum
+          eintragen, für alle Knoten eines Raums dieselbe Bezeichnung. Bei einem Witness- oder
+          reinen Quorum-Knoten leer lassen: Ein solcher Knoten zählt nie als tragfähig.</li>
+          <li>Unter <i>Auslöser</i> → <b>Diese Appliance</b> springt die Auswahl ab zwei
+          Standorten von selbst auf „kein Gast dieses Clusters", und „Dieser Host" ist auf
+          Knoten mit Standort nicht wählbar.</li>
+          <li>Selbsttest ausführen. Er prüft die Shutdown-Policy, den HA-Disarm, zwei Räume an
+          derselben USV, die Ceph-Monitor-Mehrheit ohne jeden Raum, das Wieder-scharf-Schalten
+          und ob die Appliance nicht doch im Cluster läuft.</li>
+          <li><b>„Test-Shutdown"</b> drücken: Er beschreibt je Raum, was passieren würde.</li>
+        </ol>
+        <p class="muted">„Gesamten Cluster als Einheit herunterfahren" ist gesperrt, solange
+        Standorte gesetzt sind — das entscheiden jetzt die Räume. Mit weniger als zwei
+        Standorten ändert sich nichts.</p>
       </section>
 
       <section class="card" id="failsafe">
@@ -1251,7 +1352,10 @@ curl -s http://&lt;container-ip&gt;:8080/api/status \
           <li><b>Eine USV</b>: oben die Restlaufzeit in Minuten, darunter Last und Ladung in
           Prozent — zwei Felder auf einer Zeitachse statt eines Diagramms mit zwei Skalen. Die
           gestrichelte Linie ist der Auslöser „Restlaufzeit unter", den diese USV tatsächlich
-          verwendet; so ist zu sehen, wie knapp ein Ausfall daran vorbeiging.</li>
+          verwendet; so ist zu sehen, wie knapp ein Ausfall daran vorbeiging. Hat die USV
+          einen Leistungswert (siehe <a href="#snmp">Abschnitt 5</a>), zeigt ihn ein drittes
+          Feld in Watt, und die Ausfall-Tabelle ergänzt die höchste Last um die
+          Spitzenleistung.</li>
           <li><b>Alle</b> (bei mehr als einer USV): eine Messgröße für jede USV in einem
           Diagramm, darunter je USV ein Statusstreifen.</li>
           <li>Die <b>Ausfall-Tabelle</b> listet jeden Abschnitt im Akkubetrieb im Zeitraum —
@@ -1374,6 +1478,16 @@ curl -s http://&lt;container-ip&gt;:8080/api/status \
             <tr><td>Nur Kritisches</td><td>Shutdown ausgelöst, Shutdown FEHLGESCHLAGEN</td></tr>
           </tbody>
         </table>
+        <p><b>Konfigurationshinweise aus dem Selbsttest senden</b> (je Webhook, standardmäßig
+        an) — der Selbsttest meldet zwei Arten von Befunden. Eine <b>Störung</b> ist etwas,
+        das scheitern wird, fehlt oder von einem früheren Ausfall übrig ist: ein Token ohne
+        die nötigen Rechte, HA noch disarmed, Ceph-Flags noch gesetzt. Ein <b>Hinweis</b>
+        beschreibt einen Aufbau, der wie eingestellt funktioniert, und erklärt nur eine Folge
+        oder empfiehlt etwas — etwa Knoten eines Clusters an verschiedenen USVs, eine andere
+        als die empfohlene <code>shutdown_policy</code> oder ein korrigierter Wert. Ohne
+        Haken erhält dieses Ziel keine Hinweise mehr; im Ereignisprotokoll und auf dem
+        Dashboard stehen sie weiterhin. Störungen und alles Kritische werden immer
+        gesendet.</p>
         <div class="callout info">
           <span>Seit dieser Version ist <b>Warnungen und Kritisches</b> der Standard — reine
           Entwarnungen kommen also nicht mehr an. Für das bisherige Verhalten die Stufe auf
@@ -1602,6 +1716,23 @@ systemctl start pve-usv-agent.service</code></pre>
         <p class="muted">Vereinfachte, nutzersichtbare Highlights. Der vollständige technische
         Verlauf steht im <a href="https://github.com/ffind-dev/pve-ups/blob/main/CHANGELOG.md"
         target="_blank" rel="noopener">Changelog des GitHub-Repositories</a>.</p>
+
+        <div class="cl-ver">4.4.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Cluster über zwei Räume (Beta)</b>: Jedem Knoten seinen Raum als „Standort"
+          geben. Verliert ein Raum den Strom, gehen nur seine Knoten herunter und HA übernimmt
+          im anderen; erst wenn kein vollständiger Raum mehr bleibt, wird der Cluster
+          vorbereitet und komplett heruntergefahren. „Test-Shutdown" beschreibt beide Fälle
+          je Raum. Siehe <a href="#cluster-sites">zwei Räume</a>.</li>
+          <li><b>Der clusterweite Gäste-Stopp findet jeden Gast</b>, auch solche, die seit dem
+          letzten Selbsttest migriert oder gestartet wurden, und fragt einen noch migrierenden
+          Gast erneut, statt ihn hart abzuschalten.</li>
+          <li><b>Leistung in Watt</b> auf dem Dashboard und im Verlauf, aus der Last geschätzt,
+          wo die USV keine meldet; <b>Konfigurationshinweise</b> aus dem Selbsttest lassen sich
+          je Webhook stummschalten.</li>
+          <li><b>Italienische Oberfläche</b>, automatisch für italienische Browser; das
+          Handbuch bleibt englisch und deutsch.</li>
+        </ul>
 
         <div class="cl-ver">4.3.0 <span class="date">2026</span></div>
         <ul>

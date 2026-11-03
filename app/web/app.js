@@ -236,6 +236,8 @@ function upsCardHtml(u) {
     <div class="stat"><span>${esc(t("ups.runtime"))}</span><b>${fmt(u.runtime_remaining_min, " min")}</b></div>
     ${u.load_pct === null || u.load_pct === undefined ? ""
       : `<div class="stat" title="${esc(t("ups.loadTitle"))}"><span>${esc(t("ups.load"))}</span><b>${u.load_pct} %</b></div>`}
+    ${u.power_w === null || u.power_w === undefined ? ""
+      : `<div class="stat" title="${esc(t(u.power_estimated ? "ups.powerEstTitle" : "ups.powerTitle"))}"><span>${esc(t("ups.power"))}</span><b>${u.power_estimated ? "≈ " : ""}${u.power_w} W</b></div>`}
     <div class="stat"><span>${esc(t("ups.battery"))}</span><b>${esc(u.battery_status)}</b></div>
     ${cd}${clr}${trig}
     <div class="stat"><span>${esc(t("ups.lastPoll"))}</span><b>${u.last_poll ? new Date(u.last_poll).toLocaleTimeString() : "–"}</b></div>
@@ -527,12 +529,21 @@ function renderClusters(clusters, shuttingDown) {
     // waits for it — elsewhere no guests are stopped and the question does not arise.
     if (c.self_guest_on_ceph === true) bits.push(t("cluster.selfOnCeph"));
     else if (c.self_guest_missing) bits.push(t("cluster.selfUnknown"));
+    // Site failover: during an outage, say which of the two ways it went — the one
+    // question an operator has while one room is dark.
+    if (c.episode_mode === "partial") bits.push(t("cluster.modePartial"));
+    else if (c.episode_mode === "full") bits.push(t("cluster.modeFull"));
     const state = bits.length ? bits.join(" · ") : t("cluster.ok");
+    const sites = c.failover && c.sites
+      ? " · " + t("cluster.sites", {
+        sites: Object.entries(c.sites).map(([s, n]) => `${s} (${n.join(", ")})`).join(", "),
+      })
+      : "";
     const guests = c.guests_readable
       ? " · " + t("cluster.guests", { running: c.guests_running, total: c.guests_total })
       : "";
     return `<b>${esc(c.name)}</b> (${c.nodes_online}/${(c.nodes || []).length} `
-      + `${esc(t("cluster.nodes"))}${esc(guests)}): ${esc(state)}`;
+      + `${esc(t("cluster.nodes"))}${esc(guests)}${esc(sites)}): ${esc(state)}`;
   }).join("<br>");
 }
 
@@ -678,6 +689,7 @@ function addUpsCard(u, open) {
     <div class="row u_tuning">
       <label title="${esc(t("cfg.timeoutTitle"))}">${esc(t("cfg.timeout"))} <input class="u_timeout" type="number" step="0.5" min="0.5" value="${u.timeout_s ?? 3}" /></label>
       <label class="u_retries_wrap" title="${esc(t("cfg.retriesTitle"))}">${esc(t("cfg.retries"))} <input class="u_retries" type="number" min="0" value="${u.retries ?? 1}" /></label>
+      <label title="${esc(t("cfg.nominalWTitle"))}">${esc(t("cfg.nominalW"))} <input class="u_nominal_w" type="number" min="1" step="1" value="${u.nominal_power_w ?? ""}" placeholder="${esc(t("cfg.nominalWPh"))}" /></label>
     </div>
     <p class="help u_tuning_help">${esc(t("cfg.tuningHelp"))}</p>
     <details class="u_over">
@@ -755,6 +767,7 @@ function upsFromCard(div) {
     host: q(".u_host").value.trim(),
     port: Number(q(".u_port").value || DEFAULT_PORTS[type]),
     timeout_s: Number(q(".u_timeout").value || 3),
+    nominal_power_w: numOr(".u_nominal_w"),
     overrides: {
       on_battery_seconds: numOr(".o_obs"),
       runtime_below_minutes: numOr(".o_rbm"),
@@ -855,9 +868,79 @@ function syncClusterThresholds() {
   block.hidden = !document.querySelector("#hostRows .h_cluster:checked");
   const box = $("applianceBox");
   // Only the guest stop (on its own, or as part of the Ceph option) stops guests, and only
-  // then does it matter which guest we are.
-  if (box) box.hidden = !guestStopRow();
+  // then does it matter which guest we are. Site failover needs the box too: it is where
+  // the appliance is pinned to "outside the cluster".
+  if (box) box.hidden = !guestStopRow() && !siteFailoverOn;
   updateClusterBudgetHint();
+}
+
+// --- site failover (4.4.0) -----------------------------------------------------
+// True while the form holds two or more sites. Kept as state rather than recomputed in
+// applianceChoice(), which runs on every card and every save.
+let siteFailoverOn = false;
+
+// The sites as the form has them now: enabled PVE cards ticked as cluster members that
+// carry a site. The same reading as AppConfig.cluster_sites(), so the form locks exactly
+// what the save would otherwise refuse.
+function formSites() {
+  const sites = {};
+  const unsited = [];
+  document.querySelectorAll("#hostRows .host-cfg").forEach((el) => {
+    if (el.querySelector(".h_type").value === "pbs") return;
+    if (!el.querySelector(".h_enabled").checked || !el.querySelector(".h_cluster").checked) return;
+    const name = el.querySelector(".h_name").value.trim() || t("host.newName");
+    const site = el.querySelector(".h_site").value.trim();
+    if (site) (sites[site] = sites[site] || []).push(name);
+    else unsited.push(name);
+  });
+  return { sites, unsited, failover: Object.keys(sites).length >= 2 };
+}
+
+// One line per card says who belongs where, so a forgotten node is visible without
+// opening every card; "as a unit" is locked, because the sites decide that now.
+function syncSites() {
+  const fs = formSites();
+  const dl = $("siteList");
+  if (dl) dl.innerHTML = Object.keys(fs.sites).map((s) => `<option value="${esc(s)}"></option>`).join("");
+  const summary = Object.entries(fs.sites).map(([s, n]) => `${s} (${n.join(", ")})`).join(" · ");
+  document.querySelectorAll("#hostRows .host-cfg").forEach((el) => {
+    const state = el.querySelector(".h_sitestate");
+    if (!state) return;
+    const mine = el.querySelector(".h_site").value.trim();
+    if (fs.failover) {
+      state.textContent = t("host.siteState", { sites: summary })
+        + (fs.unsited.length ? " · " + t("host.siteUnsited", { nodes: fs.unsited.join(", ") }) : "");
+      state.hidden = false;
+    } else {
+      state.textContent = mine ? t("host.siteOne") : "";
+      state.hidden = !mine;
+    }
+    el.querySelector(".h_cluster_shutdown_all").disabled = fs.failover;
+    el.querySelector(".h_unitbysite").hidden = !fs.failover;
+    el.querySelector(".h_unitnote").hidden = fs.failover;
+    if (fs.failover) el.querySelector(".h_unitwarn").hidden = true;
+  });
+  syncApplianceForSites(fs.failover);
+}
+
+// With site failover the appliance has to run outside the cluster (the backend refuses
+// anything else), so the choice is pinned rather than left to be rejected on save.
+function syncApplianceForSites(on) {
+  const changed = on !== siteFailoverOn;
+  siteFailoverOn = on;
+  const sel = $("ap_self_pick");
+  if (sel) {
+    if (on) sel.value = "external";
+    sel.disabled = on;
+  }
+  const show = (id, v) => { const e = $(id); if (e) e.hidden = !v; };
+  show("ap_sitenote", on);
+  show("ap_help", !on);
+  show("ap_cephwarn", !on);
+  show("ap_reload", !on);
+  const box = $("applianceBox");
+  if (box) box.hidden = !guestStopRow() && !on;
+  if (changed) onApplianceChange();
 }
 
 // First host card on which the cluster-wide guest stop is in effect: ticked by itself, or
@@ -880,6 +963,7 @@ let applianceGuests = [];
 let applianceStored = { vmid: null, node: "", external: false };
 
 function applianceChoice() {
+  if (siteFailoverOn) return { vmid: null, node: "", external: true };
   const sel = $("ap_self_pick");
   if (!sel) return { ...applianceStored };
   if (sel.value === "external") return { vmid: null, node: "", external: true };
@@ -896,6 +980,15 @@ function applianceChoice() {
 function syncThisHostFromAppliance(el) {
   const chk = el.querySelector(".h_this");
   const note = el.querySelector(".h_thisderived");
+  // A node with a site can never carry the appliance once site failover is on: the
+  // appliance runs outside the cluster then (see syncApplianceForSites).
+  if (siteFailoverOn && el.querySelector(".h_site").value.trim()) {
+    chk.checked = false;
+    chk.disabled = true;
+    note.hidden = true;
+    el.querySelector(".h_orderlbl").hidden = false;
+    return;
+  }
   const { node, external } = applianceChoice();
   if (!node || external) {
     chk.disabled = false;
@@ -1004,6 +1097,9 @@ async function loadConfig() {
   // settings page that cannot open without one would be worse than a single entry saying
   // what is currently selected. "Reload" fetches the rest.
   renderApplianceGuests($("ap_self_pick"), applianceGuests, applianceStored);
+  // After the cards AND the appliance list: the sites may pin the choice that was just
+  // rendered from the stored value.
+  syncSites();
   updateUnreachableHint();
   updateClusterBudgetHint();
   syncClusterThresholds();
@@ -1098,11 +1194,19 @@ function addHostRow(h, isNew, open) {
       <div class="h_clusteropts">
         <p class="warnnote"><svg class="icon"><use href="#i-alert"></use></svg>
           <span>${esc(t("host.clusterNeeds92"))}</span></p>
+        <!-- Site failover (4.4.0): a free label per node, empty by default. Two or more
+             sites switch it on (see PveHostConfig.cluster_site); one alone does nothing.
+             First in the group because it decides what "as a unit" below still means. -->
+        <label class="h_sitelbl" title="${esc(t("host.siteTitle"))}">${esc(t("host.site"))} <input class="h_site" list="siteList" maxlength="32" placeholder="${esc(t("host.sitePh"))}" value="${esc(h.cluster_site || "")}" /></label>
+        <p class="help">${esc(t("host.siteHelp"))}
+          <a data-manual="cluster-sites" target="_blank" rel="noopener">${esc(t("host.siteDoc"))}</a></p>
+        <p class="help h_sitestate" hidden></p>
         <!-- Defaults to ON (see PveHostConfig.cluster_shutdown_all), hence "!== false".
              It keeps the shutdown in step with the preparation, which is cluster-wide
              either way — see the comment on the config field. -->
         <label class="chkline" title="${esc(t("host.clusterShutdownAllTitle"))}"><input class="h_cluster_shutdown_all" type="checkbox" ${h.cluster_shutdown_all !== false ? "checked" : ""} /> ${esc(t("host.clusterShutdownAll"))}</label>
         <p class="help h_unitnote">${esc(t("host.clusterShutdownAllHelp"))}</p>
+        <p class="help h_unitbysite" hidden>${esc(t("host.unitBySite"))}</p>
         <p class="warnnote h_unitwarn" hidden><svg class="icon"><use href="#i-alert"></use></svg>
           <span>${esc(t("host.clusterShutdownAllWarn"))}</span></p>
         <label class="chkline" title="${esc(t("host.clusterHaTitle"))}"><input class="h_cluster_ha_disarm" type="checkbox" ${h.cluster_ha_disarm !== false ? "checked" : ""} /> ${esc(t("host.clusterHa"))}</label>
@@ -1156,9 +1260,11 @@ function addHostRow(h, isNew, open) {
     // discovered name is used when the engine has one, the plain word until then.
     const inCluster = ty !== "pbs" && el.querySelector(".h_cluster").checked;
     const cname = inCluster ? (CLUSTER_NAMES[el.querySelector(".h_id").value] || "") : "";
+    const site = inCluster ? el.querySelector(".h_site").value.trim() : "";
     el.querySelector(".h_sum_meta").textContent =
       "· " + hostTypeLabel(ty)
       + (inCluster ? " · " + (cname || t("host.sumCluster")) : "")
+      + (site ? " · " + site : "")
       + (en ? "" : " " + t("host.inactive"));
   };
   // Kept on the element so a later status refresh can redraw every summary: the cluster
@@ -1228,14 +1334,19 @@ function addHostRow(h, isNew, open) {
       el.querySelector(".h_cluster_shutdown_all").checked || !gs.checked;
     syncThisHostFromAppliance(el);
     updSum();
+    // Sites are a property of the whole form (two cards make a failover), so every card
+    // change re-reads them all. Cheap: a handful of cards.
+    syncSites();
   };
   el.querySelector(".h_del").onclick = () => {
     el.remove();
     drawConfigTopology();
     syncDuplicateUrls();
+    syncSites();
   };
   el.querySelector(".h_test").onclick = () => testHost(el);
-  el.querySelector(".h_name").oninput = () => { updSum(); drawConfigTopology(); };
+  el.querySelector(".h_name").oninput = () => { updSum(); drawConfigTopology(); syncSites(); };
+  el.querySelector(".h_site").oninput = () => { updSum(); syncSites(); syncClusterThresholds(); };
   el.querySelector(".h_url").oninput = syncDuplicateUrls;
   el.querySelector(".h_this").onchange = () => { syncFlags(); drawConfigTopology(); };
   el.querySelector(".h_cluster").onchange = () => { syncFlags(); syncClusterThresholds(); };
@@ -1252,6 +1363,7 @@ function addHostRow(h, isNew, open) {
     updSum();
     drawConfigTopology();
     syncDuplicateUrls();
+    syncSites();
   };
   el.querySelector(".h_type").onchange = () => {
     // Carry the URL over to the new type's default port, unless the user typed their own.
@@ -1361,6 +1473,7 @@ function hostFromRow(tr) {
       return gs.disabled ? gs.dataset.own === "1" : gs.checked;
     })(),
     cluster_ha_disarm: tr.querySelector(".h_cluster_ha_disarm").checked,
+    cluster_site: tr.querySelector(".h_site").value.trim(),
   };
 }
 
@@ -1646,6 +1759,7 @@ function addWebhookCard(w, open) {
       <label title="${esc(t("notif.formatTitle"))}">${esc(t("notif.format"))} <select class="w_format">${opts(WEBHOOK_FORMATS, w.format || "json")}</select></label>
       <label title="${esc(t("notif.minSeverityTitle"))}">${esc(t("notif.minSeverity"))} <select class="w_min_severity">${opts(WEBHOOK_LEVELS, w.min_severity || "warning")}</select></label>
     </div>
+    <label class="switch" title="${esc(t("notif.configHintsTitle"))}"><input type="checkbox" class="w_config_hints" ${w.config_hints === false ? "" : "checked"} /><span>${esc(t("notif.configHints"))}</span></label>
     <p class="help w_help"></p>
     <div class="w_custom" hidden>
       <label title="${esc(t("notif.contentTypeTitle"))}">${esc(t("notif.contentType"))} <input class="w_content_type" value="${esc(w.content_type || "application/json")}" /></label>
@@ -1702,6 +1816,7 @@ function webhookFromCard(div) {
     url: q(".w_url").value.trim(),
     format: q(".w_format").value,
     min_severity: q(".w_min_severity").value,
+    config_hints: q(".w_config_hints").checked,
     template: q(".w_template").value,
     content_type: q(".w_content_type").value.trim() || "application/json",
     auth_header_name: q(".w_auth_name").value.trim(),

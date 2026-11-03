@@ -167,7 +167,7 @@
   <header class="topbar">
     <span class="brand">
       <svg class="mark icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3z"/></svg>
-      PVE-UPS <span class="sub">User Manual · v4.3.0</span>
+      PVE-UPS <span class="sub">User Manual · v4.4.0</span>
     </span>
     <span class="spacer"></span>
     <a class="btn" href="https://github.com/ffind-dev/pve-ups" target="_blank"
@@ -535,6 +535,16 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
           case (see section 7), but a still-reachable source is better.</span>
         </div>
 
+        <h3>Power in watts</h3>
+        <p>The dashboard and the history show a UPS&rsquo;s output power in watts where
+        it is known. A NUT driver that publishes <code>ups.realpower</code> delivers the
+        measured value. Many USB units report only their load in percent; for those the
+        power is <b>estimated</b> as load × rated power and shown as <b>≈ 420 W</b>. The
+        rating comes from the optional field <b>“Rated power (W)”</b> on the UPS card (the
+        real power on the type label or data sheet, not the VA figure) or, if that is
+        empty, from <code>ups.realpower.nominal</code>. Over SNMP only the field supplies
+        it. The value is information only: no trigger reads it.</p>
+
         <h3>Reading the test result</h3>
         <p>Below the result line, <b>“Test UPS”</b> offers <b>Details per object</b> — every
         object queried individually, with its value or the reason it is missing. It unfolds
@@ -663,6 +673,23 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
         Ceph on its own nodes, read
         <a href="#cluster-ceph">Hyper-converged clusters (Ceph)</a> afterwards — that part is
         a considerably larger intervention, with its own privileges.</p>
+        <p><b>Which setup do you have?</b> Find your row, then read only that part:</p>
+        <table>
+          <thead><tr><th>Your cluster</th><th>Setting</th><th>Read</th></tr></thead>
+          <tbody>
+            <tr><td>All nodes hang on the same power and fail together</td>
+                <td>“Shut the whole cluster down as a unit” (default)</td>
+                <td><a href="#cluster-unit">As a unit</a></td></tr>
+            <tr><td>Nodes on different UPS devices, no Ceph, and HA should take over from a
+                single failing node</td>
+                <td>“As a unit” off</td>
+                <td><a href="#cluster-unit">As a unit</a></td></tr>
+            <tr><td>Spread over two rooms, each with its own UPS, plus a quorum vote at a third
+                location</td>
+                <td>A <b>site</b> per node</td>
+                <td><a href="#cluster-sites">Two rooms</a></td></tr>
+          </tbody>
+        </table>
         <p>Tick “Cluster member” in the <i>Proxmox VE cluster</i> box on the host card —
         on <b>every</b> node of the cluster. Members are grouped automatically by the cluster
         name read from the API, so no second token and no extra configuration section is
@@ -926,7 +953,10 @@ pveum acl modify / -token 'ups@pve!shutdown' -role UpsCluster</code></pre>
         PVE-UPS follows it. Every running guest is asked to shut down at once — up to eight
         requests in flight, because asking forty guests one after another would spend a
         connect timeout on each — and the result is <b>verified</b> by re-reading the
-        cluster's guest list, never inferred from the API's answer.</p>
+        cluster's guest list, never inferred from the API's answer. The list itself is read
+        again right after the HA disarm, so a guest that has migrated or been started since the
+        last self-test is stopped where it is now, and one that refuses because it is still
+        migrating is asked again until it accepts.</p>
         <p>Two timeouts under <i>Triggers</i> govern this, and they are separate on
         purpose:</p>
         <ul>
@@ -1016,6 +1046,71 @@ pveum role add UpsCluster -privs "Sys.Audit Sys.Console Sys.Modify VM.Audit VM.P
         </div>
         <p class="muted">“Restore cluster” does <b>not</b> start the guests again — they come
         back through their <code>onboot</code> setting when the nodes power on.</p>
+
+        <h3 id="cluster-sites">Clusters across two rooms (site failover) <span class="pill warn">Beta</span></h3>
+        <p>For a cluster spread over two rooms that each have their own UPS. If <b>one room</b>
+        loses power, only its nodes are shut down and HA takes over in the other room —
+        nothing is prepared. Only when <b>no complete room is left</b> (both at once, or the
+        second one later) is the cluster prepared as described above and shut down as a
+        whole.</p>
+
+        <h4 id="cluster-sites-prereq">Before you switch it on</h4>
+        <ul>
+          <li><b>A quorum vote at a third location</b>: a QDevice or witness node, and with Ceph
+          a tiebreaker monitor (stretch mode). Without it the remaining room loses quorum, HA
+          fences its nodes and Ceph stops all IO — nothing PVE-UPS can fix.</li>
+          <li><b>PVE-UPS runs outside the cluster</b>, at that third location — the
+          <a href="#docker">Docker image</a> on the QDevice host, for example. Inside, it would
+          go down with its room. The settings enforce this.</li>
+          <li><b><code>shutdown_policy=migrate</code></b> in the datacenter options, and the
+          guests that should move are <b>HA-managed</b>. Every other guest simply stops with
+          its room.</li>
+          <li><b>Enough headroom</b>: each room can carry the other's HA guests, and each
+          battery lasts for the migrations. Prefer the “Runtime below” and “Charge below”
+          triggers — they follow the higher load once one room carries everything.</li>
+          <li><b>“Re-arm after mains back”</b> is set, so a room that is back counts again.</li>
+        </ul>
+
+        <h4 id="cluster-sites-when">What happens when</h4>
+        <p>A room counts as <i>complete</i> when every node of it is online and every UPS
+        feeding it is on mains. That is checked live when a UPS triggers, not remembered.</p>
+        <table>
+          <thead><tr><th>Situation</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>Room A fails, room B is complete</td>
+                <td><b>Partial</b>: only A's nodes go down, HA moves the guests to B</td></tr>
+            <tr><td>Room A fails, a node of room B is in maintenance</td>
+                <td><b>Full</b>: room B alone is incomplete</td></tr>
+            <tr><td>Both rooms fail at once</td>
+                <td><b>Full</b>: room B is on battery, no place to move to</td></tr>
+            <tr><td>Room A fails, room B later</td>
+                <td>First <b>partial</b>, then <b>full</b> for room B</td></tr>
+            <tr><td>Room A fails, room B's UPS cannot be reached</td>
+                <td><b>Full</b>: unknown is not “on mains”</td></tr>
+            <tr><td>Room A is back (after the re-arm), then room B fails</td>
+                <td><b>Partial</b>, the other way round</td></tr>
+          </tbody>
+        </table>
+        <p>In doubt the answer is always the full, prepared shutdown: the failing room goes
+        down either way, and preparing the rest is the choice that cannot leave a room dying
+        unprepared. A room that only goes on battery, without triggering yet, changes
+        nothing — the configured delay is there for short dips.</p>
+
+        <h4 id="cluster-sites-setup">Setting it up</h4>
+        <ol>
+          <li>On each node's host card enter its room under <b>“Site (room)”</b>, the same
+          label for every node of one room. Leave it empty on a witness or quorum-only node:
+          such a node never counts as able to carry the cluster.</li>
+          <li>Under <i>Triggers</i> → <b>This appliance</b> the choice switches to “not a guest
+          of this cluster” by itself once two sites exist, and “This host” is unavailable on
+          nodes with a site.</li>
+          <li>Run the self-test. It checks the shutdown policy, the HA disarm, two rooms on the
+          same UPS, the Ceph monitor majority without each room, the re-arm, and whether the
+          appliance seems to run inside the cluster after all.</li>
+          <li>Press <b>“Test shutdown”</b>: it spells out per room what would happen.</li>
+        </ol>
+        <p class="muted">“Shut the whole cluster down as a unit” is locked while sites are set
+        — the rooms decide that now. With fewer than two sites nothing changes.</p>
       </section>
 
       <section class="card" id="failsafe">
@@ -1186,7 +1281,9 @@ curl -s http://&lt;container-ip&gt;:8080/api/status \
           <li><b>One UPS</b>: runtime in minutes on top, load and charge in percent below —
           two panels on one time axis rather than one chart with two scales. The dashed line
           is the “Runtime below” trigger that UPS actually uses, so you can see how close an
-          outage came to it.</li>
+          outage came to it. Where the UPS has a power value (see
+          <a href="#snmp">section 5</a>), a third panel shows it in watts, and the outage
+          table adds the peak power to the highest load.</li>
           <li><b>All</b> (with more than one UPS): one measure for every UPS in a single
           chart, and a status strip per UPS underneath.</li>
           <li>The <b>outage table</b> lists every stretch on battery in the period — start,
@@ -1297,6 +1394,16 @@ curl -s http://&lt;container-ip&gt;:8080/api/status \
             <tr><td>Critical only</td><td>shutdown triggered, shutdown FAILED</td></tr>
           </tbody>
         </table>
+        <p><b>Send configuration hints from the self-test</b> (per webhook, on by default) —
+        the self-test reports two kinds of finding. A <b>fault</b> is something that will
+        fail, is missing or is left over from an earlier outage: a token without the right
+        privileges, HA still disarmed, Ceph flags still set. A <b>hint</b> describes a setup
+        that works as configured and only spells out a consequence or recommends something
+        — for example nodes of one cluster on different UPS devices, a
+        <code>shutdown_policy</code> other than the recommended one, or a value that was
+        corrected. Untick the box and that target no longer receives hints; they still
+        appear in the event log and on the dashboard. Faults, and anything critical, are
+        always sent.</p>
         <div class="callout info">
           <span>Since this version the default is <b>Warnings and critical</b> — pure
           all-clear messages no longer arrive. Set the filter to <b>All events</b> for the
@@ -1510,6 +1617,23 @@ systemctl start pve-usv-agent.service</code></pre>
         <p class="muted">Simplified, user-visible highlights. The full technical changelog
         lives in the <a href="https://github.com/ffind-dev/pve-ups/blob/main/CHANGELOG.md"
         target="_blank" rel="noopener">GitHub repository</a>.</p>
+
+        <div class="cl-ver">4.4.0 <span class="date">2026</span></div>
+        <ul>
+          <li><b>Clusters across two rooms (Beta)</b>: give each node its room as a “site”. If
+          one room loses power, only its nodes go down and HA takes over in the other; only
+          when no complete room is left is the cluster prepared and shut down as a whole.
+          “Test shutdown” spells out both cases per room. See
+          <a href="#cluster-sites">two rooms</a>.</li>
+          <li><b>The cluster-wide guest stop finds every guest</b>, also those migrated or
+          started since the last self-test, and asks a guest that is still migrating again
+          instead of forcing it off.</li>
+          <li><b>Power in watts</b> on the dashboard and in the history, estimated from the
+          load where the UPS reports none; <b>configuration hints</b> from the self-test can
+          be muted per webhook.</li>
+          <li><b>Italian user interface</b>, picked automatically for Italian browsers;
+          the manual stays English and German.</li>
+        </ul>
 
         <div class="cl-ver">4.3.0 <span class="date">2026</span></div>
         <ul>

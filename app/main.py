@@ -560,6 +560,18 @@ def _merge_config(incoming: dict, existing: AppConfig) -> AppConfig:
     return cfg
 
 
+def _refuse_site_conflicts(cfg: AppConfig, prefix: str) -> None:
+    """Refuse a config whose site failover could not work (see site_failover_conflicts).
+
+    Here and not in the model: a hand-edited config.yaml must never keep the appliance
+    from starting. The engine keeps the failover off for such a file instead, and the
+    self-test says why — only the two ways in through the API are closed.
+    """
+    conflicts = cfg.site_failover_conflicts()
+    if conflicts:
+        raise HTTPException(status_code=400, detail=f"{prefix}: {'; '.join(conflicts)}")
+
+
 @app.get("/api/config", dependencies=[Depends(require_auth)])
 async def api_get_config():
     assert engine is not None
@@ -575,6 +587,7 @@ async def api_set_config(incoming: dict):
         new_cfg = _merge_config(incoming, engine.cfg)
     except Exception as exc:  # noqa: BLE001 - validation error -> 400
         raise HTTPException(status_code=400, detail=f"Invalid configuration: {exc}")
+    _refuse_site_conflicts(new_cfg, "Invalid configuration")
     new_cfg.configured = True
     save_config(new_cfg)
     engine.update_config(new_cfg)
@@ -637,6 +650,7 @@ async def api_config_import(incoming: dict):
         new_cfg = AppConfig.model_validate(migrate_history_default(data))
     except Exception as exc:  # noqa: BLE001 - validation error -> 400
         raise HTTPException(status_code=400, detail=f"Invalid import file: {exc}")
+    _refuse_site_conflicts(new_cfg, "Invalid import file")
     assign_ups_ids(new_cfg.ups)  # backups from <2.0 migrate to a single UPS; ensure ids
     assign_host_ids(new_cfg.hosts)  # backups from before 4.0.0 carry no host ids
     # And webhooks, which this path used to leave alone: the id keys the delivery state

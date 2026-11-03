@@ -65,7 +65,11 @@ def _rank(severity: str) -> int:
     return _RANK.get(severity, _RANK[db.WARNING])
 
 
-def _passes(hook: WebhookConfig, severity: str) -> bool:
+def _passes(hook: WebhookConfig, severity: str, hint: bool = False) -> bool:
+    # A configuration hint (#50) is held back from a target that opted out of them; the
+    # caller has already made sure a CRITICAL is never one (Engine._emit).
+    if hint and not hook.config_hints:
+        return False
     return _rank(severity) >= _rank(_value(hook.min_severity))
 
 
@@ -424,8 +428,12 @@ async def notify(
     body: str,
     payload: dict,
     severity: str = db.INFO,
+    hint: bool = False,
 ) -> None:
     """Fire every configured webhook, swallowing all errors and never outlasting its budget.
+
+    ``hint``: a configuration hint from the self-test, which each target may opt out of
+    (WebhookConfig.config_hints).
 
     Everything is inside the guard, filter included: this runs on the engine's poll loop,
     which must never be brought down by a notification. The sends run concurrently and
@@ -447,7 +455,7 @@ async def notify(
         hooks = [
             h
             for h in (notifications.webhooks or [])
-            if h.enabled and h.url and _passes(h, severity)
+            if h.enabled and h.url and _passes(h, severity, hint)
         ]
         if not hooks:
             return

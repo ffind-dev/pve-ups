@@ -1,7 +1,7 @@
 """Per-UPS history for the History tab (#37): a small SQLite time series.
 
-One row per UPS and sample: what the UPS reported (power source, runtime, charge, load)
-and what the engine made of it (on battery, triggered). The engine decides WHEN to sample
+One row per UPS and sample: what the UPS reported (power source, runtime, charge, load,
+power) and what the engine made of it (on battery, triggered). The engine decides WHEN to sample
 (Engine._maybe_record_history) and hands the rows over through a background thread; this
 module only stores and reads them.
 
@@ -72,6 +72,10 @@ def _path(path: Optional[Path]) -> Path:
     return path if path is not None else HISTORY_PATH
 
 
+# Files whose schema has been brought up to date in this process (see _connect).
+_MIGRATED: set[str] = set()
+
+
 def _connect(path: Optional[Path] = None) -> sqlite3.Connection:
     p = _path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -87,11 +91,22 @@ def _connect(path: Optional[Path] = None) -> sqlite3.Connection:
             triggered INTEGER NOT NULL DEFAULT 0,
             runtime_min INTEGER,
             charge_pct INTEGER,
-            load_pct INTEGER
+            load_pct INTEGER,
+            power_w INTEGER
         )
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS samples_ups_ts ON samples (ups_id, ts)")
+    # A history.db from 4.3.0 has no power_w (#47). Added in place, once per file and
+    # process: the column is nullable, so the old rows simply have no watts, and nothing
+    # is rewritten — the file may hold 90 days of samples.
+    key = str(p)
+    if key not in _MIGRATED:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(samples)")}
+        if "power_w" not in cols:
+            conn.execute("ALTER TABLE samples ADD COLUMN power_w INTEGER")
+            conn.commit()
+        _MIGRATED.add(key)
     return conn
 
 
@@ -100,16 +115,18 @@ def write(rows: Iterable[tuple], prune_days: Optional[int] = None,
     """Append samples and, if asked, drop everything older than ``prune_days``.
 
     A row is (ups_id, ts, state, on_battery, triggered, runtime_min, charge_pct,
-    load_pct). One transaction for the whole batch: one fsync per write, not per row.
+    load_pct, power_w); a row without the last value (the shape before #47) has no
+    watts. One transaction for the whole batch: one fsync per write, not per row.
     """
-    rows = list(rows)
+    rows = [tuple(r) + (None,) * (9 - len(r)) for r in rows]
     if not rows and prune_days is None:
         return
     with _connect(path) as conn:
         if rows:
             conn.executemany(
                 "INSERT INTO samples (ups_id, ts, state, on_battery, triggered, "
-                "runtime_min, charge_pct, load_pct) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "runtime_min, charge_pct, load_pct, power_w) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
         if prune_days is not None:
@@ -184,26 +201,28 @@ def _bucket_s(start: int, end: int) -> int:
 
 def _points(conn: sqlite3.Connection, ups_id: str, start: int, end: int,
             bucket: int) -> list[list]:
-    """[ts, runtime_min, charge_pct, load_pct] per point, oldest first.
+    """[ts, runtime_min, charge_pct, load_pct, power_w] per point, oldest first.
 
-    Bucketed with MIN for runtime and charge and MAX for load: the chart exists to show
+    Bucketed with MIN for runtime and charge and MAX for load and power: the chart exists to show
     how close an outage came, and an average would smooth exactly that dip away.
     """
     if bucket <= 0:
         rows = conn.execute(
-            "SELECT ts, runtime_min, charge_pct, load_pct FROM samples "
+            "SELECT ts, runtime_min, charge_pct, load_pct, power_w FROM samples "
             "WHERE ups_id = ? AND ts BETWEEN ? AND ? ORDER BY ts",
             (ups_id, start, end),
         ).fetchall()
     else:
         rows = conn.execute(
             "SELECT MIN(ts) AS ts, MIN(runtime_min) AS runtime_min, "
-            "MIN(charge_pct) AS charge_pct, MAX(load_pct) AS load_pct FROM samples "
+            "MIN(charge_pct) AS charge_pct, MAX(load_pct) AS load_pct, "
+            "MAX(power_w) AS power_w FROM samples "
             "WHERE ups_id = ? AND ts BETWEEN ? AND ? "
             "GROUP BY (ts - ?) / ? ORDER BY ts",
             (ups_id, start, end, start, bucket),
         ).fetchall()
-    return [[r["ts"], r["runtime_min"], r["charge_pct"], r["load_pct"]] for r in rows]
+    return [[r["ts"], r["runtime_min"], r["charge_pct"], r["load_pct"], r["power_w"]]
+            for r in rows]
 
 
 def _kind(state: str, on_battery: int, triggered: int) -> str:
@@ -247,8 +266,8 @@ def _segments(conn: sqlite3.Connection, ups_id: str, start: int, end: int,
         (ups_id, end, end + EPISODE_REACH_S),
     ).fetchone()["ts"]
     rows = conn.execute(
-        "SELECT ts, state, on_battery, triggered, runtime_min, charge_pct, load_pct "
-        "FROM samples WHERE ups_id = ? AND ts BETWEEN ? AND ? ORDER BY ts",
+        "SELECT ts, state, on_battery, triggered, runtime_min, charge_pct, load_pct, "
+        "power_w FROM samples WHERE ups_id = ? AND ts BETWEEN ? AND ? ORDER BY ts",
         (ups_id,
          before if before is not None else start - GAP_S,
          after if after is not None else min(now, end + EPISODE_REACH_S)),
@@ -292,10 +311,11 @@ def _segments(conn: sqlite3.Connection, ups_id: str, start: int, end: int,
         if r["on_battery"]:
             if ep is None:
                 ep = {"start": ts, "min_runtime": None, "min_charge": None,
-                      "max_load": None, "triggered": False}
+                      "max_load": None, "max_power": None, "triggered": False}
             for key, col, pick in (("min_runtime", "runtime_min", min),
                                    ("min_charge", "charge_pct", min),
-                                   ("max_load", "load_pct", max)):
+                                   ("max_load", "load_pct", max),
+                                   ("max_power", "power_w", max)):
                 v = r[col]
                 if v is not None:
                     ep[key] = v if ep[key] is None else pick(ep[key], v)
@@ -349,11 +369,15 @@ def query(ups: list[tuple[str, str]], start: int, end: int,
 
 def csv_export(ups: list[tuple[str, str]], start: int, end: int,
                path: Optional[Path] = None) -> str:
-    """Raw samples of the range as CSV, one row per sample, oldest first."""
+    """Raw samples of the range as CSV, one row per sample, oldest first.
+
+    power_w is the LAST column although it is not the last measure in the chart: it came
+    later (#47), and a spreadsheet that reads the columns by position keeps working.
+    """
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["time_utc", "ups_id", "ups_name", "state", "on_battery", "triggered",
-                "runtime_min", "charge_pct", "load_pct"])
+                "runtime_min", "charge_pct", "load_pct", "power_w"])
     if not _path(path).exists():
         return buf.getvalue()
     names = dict(ups)
@@ -364,7 +388,8 @@ def csv_export(ups: list[tuple[str, str]], start: int, end: int,
     with _connect(path) as conn:
         rows = conn.execute(
             "SELECT ups_id, ts, state, on_battery, triggered, runtime_min, charge_pct, "
-            f"load_pct FROM samples WHERE ups_id IN ({marks}) AND ts BETWEEN ? AND ? "
+            f"load_pct, power_w FROM samples WHERE ups_id IN ({marks}) "
+            "AND ts BETWEEN ? AND ? "
             "ORDER BY ts, ups_id",
             (*ids, start, end),
         )
@@ -373,7 +398,7 @@ def csv_export(ups: list[tuple[str, str]], start: int, end: int,
                 datetime.fromtimestamp(r["ts"], timezone.utc).isoformat(),
                 r["ups_id"], names.get(r["ups_id"], ""), r["state"], r["on_battery"],
                 r["triggered"], _blank(r["runtime_min"]), _blank(r["charge_pct"]),
-                _blank(r["load_pct"]),
+                _blank(r["load_pct"]), _blank(r["power_w"]),
             ])
     return buf.getvalue()
 

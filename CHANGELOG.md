@@ -10,10 +10,108 @@ reads it dynamically. On every release: bump `__version__` **and** add a section
 
 ## [Unreleased]
 
-### Added
+## [4.4.0] - 2026-11-03
 
+A feature release for clusters spread over two rooms: a room that loses power alone is
+shut down by itself and HA takes over in the other one, and only the last room standing goes
+down with the full cluster preparation. Plus power in watts, configuration hints that can
+be muted per webhook, and an Italian user interface.
+
+Three settings are added: per Proxmox VE host `cluster_site` (empty), per UPS
+`nominal_power_w` (empty) and per webhook `config_hints` (on). Without them nothing
+changes, and no existing config needs editing.
+
+### Highlights
+- **Clusters across two rooms (Beta)**: give each node its room as a "site". If one room
+  loses power, only its nodes go down and HA takes over in the other; only when no
+  complete room is left is the cluster prepared and shut down as a whole. "Test shutdown"
+  spells out both cases per room.
+- **The cluster-wide guest stop finds every guest**, also those migrated or started since
+  the last self-test, and asks a guest that is still migrating again instead of forcing it
+  off.
+- **Power in watts** on the dashboard and in the history, estimated from the load where
+  the UPS reports none ([#47]); **configuration hints** from the self-test can be muted per
+  webhook ([#50]).
+- **Italian user interface**, picked automatically for Italian browsers (thanks @paki81,
+  #48).
+
+### Added
+- **Site failover for clusters across two rooms (Beta).** Each Proxmox VE host card takes
+  an optional site (`cluster_site`, a free label such as "Room A"). Once the members of a
+  cluster name two or more sites, a UPS trigger no longer prepares the whole cluster
+  straight away. The appliance first asks a node that is not going down which nodes are
+  online, and checks every UPS feeding the rest. If at least one site stays **complete** —
+  every node online, every UPS demonstrably on mains — only the due nodes are shut down:
+  HA stays armed, no guest is stopped cluster-wide, no Ceph flag is set, and HA moves the
+  guests according to the datacenter's `shutdown_policy`. Otherwise — both rooms at once, a
+  node of the other room offline, its UPS on battery or unreachable, the status unreadable,
+  or the second room failing later — the cluster gets the full preparation and every node
+  goes down, whatever "as a unit" says. A node without a site (witness, quorum-only) never
+  counts as able to carry the cluster. A node that went down in this outage is not counted
+  on again before the re-arm, and a decision that fails for any reason is a full shutdown.
+  Without two sites the cluster is handled exactly as before.
+- Site failover needs the appliance **outside the cluster**: saving or importing a
+  configuration with two or more sites is refused unless "not a guest of this cluster" is
+  picked and no node with a site carries "This host". The settings page pins both while
+  sites are set. A hand-edited `config.yaml` that breaks the rule is still loaded; site
+  failover then stays off and the self-test reports it as CRITICAL.
+- **Self-test checks for site failover**: the appliance apparently running in the cluster
+  after all (a guest carrying its host name, CRITICAL), two sites fed by the same UPS
+  devices, a `shutdown_policy` other than `migrate`, no HA disarm for the full shutdown,
+  the Ceph monitor majority without each site, and the automatic re-arm switched off. Two
+  hints are written once per run: the node majority without a site (a QDevice is not
+  visible through the API) and the nodes without a site. The feed warning for nodes on
+  different UPS devices is replaced by these checks while sites are set.
+- The shutdown preview describes per site what a partial outage would do and what happens
+  when no complete site is left; the dashboard shows the sites and, during an outage,
+  whether it is being handled as partial or full. `/api/status` carries `sites`,
+  `unsited`, `failover` and `episode_mode` per cluster. The event log says which way the
+  decision went and why, before anything is shut down.
 - Italian UI translation, picked automatically for Italian browsers (thanks @paki81, #48).
   The user manual stays English and German; the Italian UI links to the English manual.
+- **Output power in watts** ([#47]). A NUT driver's `ups.realpower` is shown as measured;
+  where a UPS reports only its load in percent, the power is estimated as load × rated
+  power and shown as "≈ 420 W". The rating comes from the new optional field "Rated power
+  (W)" on the UPS card (`nominal_power_w`) or, if that is empty, from
+  `ups.realpower.nominal`; over SNMP only the field supplies it, since no vendor table for
+  power has been checked against real hardware. The dashboard card shows it next to the
+  load, the History tab gets a power panel (one UPS) and measure ("All"), the outage table
+  adds the peak power, and `/api/status` carries `power_w` and `power_estimated`.
+  Information only: no trigger reads it.
+- **Configuration hints can be muted per webhook** ([#50]). The self-test's findings are
+  now either faults (something will fail, is missing, or is left over from an outage) or
+  hints (a setup that works as configured, where the appliance spells out a consequence or
+  recommends something — nodes of one cluster on different UPS devices, a
+  `shutdown_policy` other than the recommended one, a corrected value, …). A new switch on
+  each webhook card, "Send configuration hints from the self-test" (`config_hints`, on),
+  keeps hints out of that target; the event log and the dashboard still show them. A
+  CRITICAL finding is never a hint and is always sent.
+
+### Fixed
+- **The cluster-wide guest stop worked from an outdated guest list.** It used the list of
+  the last inspection — usually the scheduled self-test, hours old by the time of an
+  outage. A guest that had migrated since was asked to shut down on its old node, which
+  fails, and the force-stop went to the same wrong place, so it kept running (on Ceph:
+  writing until the power went); a guest started since was not stopped at all. The list is
+  now read again right after the HA disarm and laid over the old one, so a guest can only
+  be added or located more precisely, never dropped; if the read fails, the old list is
+  used as before.
+- A guest that refuses the shutdown (for example still locked by a migration that was
+  running when HA was disarmed) is asked again on every re-read of the graceful wait, at
+  the node it is on now, instead of sitting out the grace period and being forced off.
+  The force-stop also goes to the node a guest is on now.
+- The dry-run event "cluster … would be prepared" no longer ends its node count with a
+  double full stop.
+
+### Changed
+- The worst-case shutdown budget counts the one status read and the one extra event site
+  failover adds, where two sites are set.
+- `history.db` gains a `power_w` column, added in place on the first start; earlier rows
+  keep no watts. The CSV export appends it as the last column, so a sheet that reads the
+  columns by position keeps working.
+
+[#47]: https://github.com/ffind-dev/pve-ups/issues/47
+[#50]: https://github.com/ffind-dev/pve-ups/issues/50
 
 ## [4.3.0] - 2026-10-10
 
@@ -1320,7 +1418,8 @@ keep working).
   needs; a legacy `notifications.smtp` config key is ignored on load and dropped on the
   next save.
 
-[Unreleased]: https://github.com/ffind-dev/pve-ups/compare/v4.3.0...HEAD
+[Unreleased]: https://github.com/ffind-dev/pve-ups/compare/v4.4.0...HEAD
+[4.4.0]: https://github.com/ffind-dev/pve-ups/compare/v4.3.0...v4.4.0
 [4.3.0]: https://github.com/ffind-dev/pve-ups/compare/v4.2.0...v4.3.0
 [4.2.0]: https://github.com/ffind-dev/pve-ups/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/ffind-dev/pve-ups/compare/v4.0.0...v4.1.0

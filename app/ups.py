@@ -407,6 +407,13 @@ class UpsState:
     # Output load in percent of the UPS's rated capacity. Informational only: no trigger
     # reads it, so a device that does not report it simply shows nothing.
     load_pct: Optional[int] = None
+    # Output power in watts (#47), informational like load_pct. Measured when the device
+    # reports it, otherwise estimated as load x rated power (sources.estimate_power), in
+    # which case ``power_estimated`` says so. ``power_nominal_w`` is the rating the device
+    # reports itself — only an input to that estimate.
+    power_w: Optional[int] = None
+    power_estimated: bool = False
+    power_nominal_w: Optional[int] = None
     error: Optional[str] = None
     raw: dict = field(default_factory=dict)
     # Which MIB profile produced this state ("" for sources without one, e.g. NUT).

@@ -20,6 +20,7 @@ Copyright 2026 Florian Finder
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -36,6 +37,13 @@ from .sources import poll
 from .ups import UpsState
 
 log = logging.getLogger("pve-usv.engine")
+
+# Set while a configuration hint is being emitted (see Engine._hint). A ContextVar rather
+# than an argument to _emit(): it belongs to the one call it wraps, so a shutdown event
+# emitted by another task at the same moment can never be taken for a hint.
+_EMITTING_HINT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "emitting_hint", default=False
+)
 
 ONLINE = "ONLINE"
 ON_BATTERY = "ON_BATTERY"
@@ -163,6 +171,20 @@ class GuestPlan:
         return self.requested and not self.block
 
 
+@dataclass
+class FailoverDecision:
+    """What site failover decided for one cluster on one poll (Engine._failover_decision).
+
+    ``partial`` True: a complete site stays up, so only the due nodes go down and HA moves
+    the guests. False: no complete site would remain, so the cluster is prepared and goes
+    down as a whole — the path every cluster without sites always takes.
+    """
+
+    partial: bool
+    intact: list[str] = field(default_factory=list)   # sites that stay up complete
+    reason: str = ""                                   # why not partial, for the event log
+
+
 # How many events can be emitted one after another between a trigger firing and the last
 # shutdown stage, NOT counting the stages themselves: the outage notice, the four
 # cluster-preparation events, and the abort or partial-shutdown notice. Engine._emit()
@@ -240,6 +262,9 @@ def shutdown_budget(cfg: AppConfig) -> ShutdownBudget:
         for h in cfg.hosts
     )
     noisy = any(h.enabled and h.url for h in cfg.notifications.webhooks)
+    # Site failover reads who is online before it decides, and says what it decided in one
+    # more event. Only where two sites exist — elsewhere neither happens.
+    sites = len(cfg.cluster_sites()) >= 2
     return ShutdownBudget(
         stages=stages,
         # The grace belongs in here: targets.shutdown() bounds a call at the configured
@@ -259,10 +284,14 @@ def shutdown_budget(cfg: AppConfig) -> ShutdownBudget:
         # _cold_inspect() runs them concurrently.
         inspect_s=(
             int(cluster.INSPECT_BUDGET_S + cluster.DEADLINE_GRACE_S) if clustered else 0
+        ) + (
+            int(cluster.ONLINE_READ_BUDGET_S + cluster.DEADLINE_GRACE_S) if sites else 0
         ),
         # Plus one round per stage: see NOTIFY_EVENTS_ON_PATH.
         notify_s=(
-            int(notify.NOTIFY_BUDGET_S) * (NOTIFY_EVENTS_ON_PATH + stages) if noisy else 0
+            int(notify.NOTIFY_BUDGET_S) * (NOTIFY_EVENTS_ON_PATH + stages + int(sites))
+            if noisy
+            else 0
         ),
     )
 
@@ -421,6 +450,14 @@ class Engine:
         # one means "we could not look", which is a different verdict with different
         # consequences (abort-on-failure keys on it; this must never hold a node back).
         self.cluster_standalone: set[str] = set()
+        # Site failover, per episode: what was decided per cluster ("partial" / "full", for
+        # the dashboard) and which partial outages were already announced, keyed by the
+        # cluster and the nodes going down, so a second room failing later is said too.
+        self.cluster_episode_mode: dict[str, str] = {}
+        self._partial_announced: set[tuple[str, frozenset[str]]] = set()
+        # Site-failover hints already written this run (see _check_site_failover): they
+        # describe the setup, not an incident, so once per process is enough.
+        self._site_notes: set[tuple[str, str]] = set()
         self._disarm_unsupported_warned: set[str] = set()
         # Set by the automatic re-arm, consumed by _maybe_selftest: right after a
         # re-arm is exactly when a leftover problem (an expired token, a cluster still
@@ -723,6 +760,8 @@ class Engine:
         self.cluster_unit_hosts = {}
         self.cluster_inspect_failed = set()
         self.cluster_standalone = set()
+        self.cluster_episode_mode = {}
+        self._partial_announced = set()
         self._mains_ok_since = None
 
     def _clear_host_shutdown_state(self, key: str) -> None:
@@ -1190,6 +1229,8 @@ class Engine:
             self.cluster_unit_hosts = {}
             self.cluster_inspect_failed = set()
             self.cluster_standalone = set()
+            self.cluster_episode_mode = {}
+            self._partial_announced = set()
 
     def _cluster_episode_live(self, host: HostConfig) -> bool:
         """Whether the shutdown episode of this host's cluster is still running.
@@ -1305,11 +1346,7 @@ class Engine:
             return
 
         mains_ok = bool(self.ups_rt) and all(
-            rt.state.reachable
-            and not rt.state.on_battery
-            and rt.on_battery_since is None
-            and not rt.triggered
-            for rt in self.ups_rt.values()
+            self._ups_mains_ok(rt) for rt in self.ups_rt.values()
         )
         if not mains_ok:
             self._mains_ok_since = None
@@ -1343,6 +1380,29 @@ class Engine:
         # iteration. _maybe_selftest() picks the flag up a few lines later in the loop and
         # already owns the guard that refuses to run one during an outage.
         self._rearm_selftest_pending = True
+
+    @staticmethod
+    def _ups_mains_ok(rt: _UpsRuntime) -> bool:
+        """This UPS is demonstrably on mains: reachable, not on battery, nothing pending.
+
+        One reading for the two places that have to be sure rather than hopeful — the
+        automatic re-arm and site failover. An unreachable UPS is not "on mains": we do not
+        know, so we do not count on it.
+        """
+        return (
+            rt.state.reachable
+            and not rt.state.on_battery
+            and rt.on_battery_since is None
+            and not rt.triggered
+        )
+
+    def _power_secured(self, host: HostConfig) -> bool:
+        """Every UPS feeding this host is demonstrably on mains (see _ups_mains_ok).
+
+        A host without feeds has nothing that vouches for it, so it is not secured.
+        """
+        rts = [self.ups_rt.get(uid) for uid in self.cfg.feed_ids_for(host)]
+        return bool(rts) and all(rt is not None and self._ups_mains_ok(rt) for rt in rts)
 
     def _host_trigger_reason(self, host: HostConfig) -> Optional[str]:
         """A host is eligible when its feeds satisfy its policy.
@@ -1669,10 +1729,43 @@ class Engine:
                 + (" (* carries a Ceph MON and should go last)"
                    if any(h.name in info.mon_nodes for h in members) else "")
             )
+            if len(self._sites(members)) >= 2:
+                lines.append(self._site_preview(name, members))
         # Once, at the end. The figure is estate-wide (see shutdown_budget), so repeating
         # it on every cluster line read as a per-cluster cost — three clusters looked like
         # three times the budget they actually share.
         return " ".join(lines) + f" Up to {shutdown_budget_s(self.cfg)}s in total."
+
+    def _site_preview(self, name: str, members: list[PveHostConfig]) -> str:
+        """What site failover would do, per site, in plain words. Pure, like the preview.
+
+        The one place an operator can check the site assignment without reading the
+        manual: every site failing on its own, then everything failing, then the nodes
+        that count for nothing.
+        """
+        conflicts = self.cfg.site_failover_conflicts()
+        if conflicts:
+            return (
+                f"Cluster {name}: sites are set, but site failover is OFF "
+                f"({'; '.join(conflicts)}) - the cluster is handled as if it had none."
+            )
+        sites = self._sites(members)
+        parts = [
+            f"site {s} fails alone -> {', '.join(h.name for h in hs)} go down, HA moves "
+            f"their guests, nothing is prepared"
+            for s, hs in sites.items()
+        ]
+        parts.append("no complete site left -> the steps above, then every node")
+        unsited = [h.name for h in members if not h.cluster_site]
+        return (
+            f"Cluster {name}, site failover: " + "; ".join(parts) + "."
+            + (
+                f" Without a site (never counted as able to carry the cluster): "
+                f"{', '.join(unsited)}."
+                if unsited
+                else ""
+            )
+        )
 
     def _maybe_prune(self) -> None:
         """Trim the event log once per day so events.db stays bounded over months."""
@@ -1728,6 +1821,7 @@ class Engine:
                     st.runtime_remaining_min if st.reachable else None,
                     st.battery_charge_pct if st.reachable else None,
                     st.load_pct if st.reachable else None,
+                    st.power_w if st.reachable else None,
                 ))
         else:
             # Off: nothing is recorded, and switching it back on starts afresh rather than
@@ -1976,7 +2070,7 @@ class Engine:
             if line in self._value_corrections_warned:
                 continue
             self._value_corrections_warned.add(line)
-            await self._emit(
+            await self._hint(
                 "Setting out of range — corrected",
                 f"{line}. Check it under Settings; the appliance is running with the "
                 f"value named here, not with the one that was stored.",
@@ -2136,7 +2230,7 @@ class Engine:
                 h.name for h in self.cfg.hosts
                 if h.enabled and h.api_url.strip().rstrip("/").lower() == url
             ]
-            await self._emit(
+            await self._hint(
                 "Several hosts share one API URL",
                 f"{url} is configured for {', '.join(names)}. Every node needs its own "
                 f"API URL — one that is already powered off cannot forward the shutdown "
@@ -2278,6 +2372,9 @@ class Engine:
         # Hosts pulled in because their cluster goes down as a unit. Collected here and
         # merged once at the end, so the canonical ordering is rebuilt exactly once.
         extra: list[tuple[HostConfig, str]] = []
+        # Clusters site failover settled as a partial outage on THIS pass: their other
+        # candidates need no second decision.
+        partial_now: set[str] = set()
         cold = await self._cold_inspect(candidates)
 
         for host, reason in candidates:
@@ -2361,9 +2458,36 @@ class Engine:
                     self.host_states.setdefault(member.key, {})["cluster_name"] = name
                 self.host_states.setdefault(host.key, {})["cluster_name"] = name
 
-            if self.cluster_prepared.get(name):
+            if self.cluster_prepared.get(name) or name in partial_now:
                 continue
+
+            # Site failover (Beta). None for every cluster without sites, and the code
+            # below then runs exactly as it always has. A partial outage stops here: no
+            # latch, no preparation, no unit additions — the due nodes simply go down and
+            # HA moves the guests, and a later full outage still finds the latch unset.
+            decision = await self._failover_decision(
+                name, self._cluster_members(info, name), eligible
+            )
+            if decision is not None and decision.partial:
+                partial_now.add(name)
+                await self._announce_partial(
+                    name, self._cluster_members(info, name), eligible, decision
+                )
+                continue
+            # No complete site left: the rest of the cluster cannot carry on alone, so it
+            # goes as a unit whatever that switch says.
+            force_unit = decision is not None
+
             self.cluster_prepared[name] = True  # latch first: never prepare twice
+            if decision is not None:
+                self.cluster_episode_mode[name] = "full"
+                await self._emit(
+                    f"{'DRY-RUN: ' if self.cfg.dry_run else ''}Cluster {name}: no complete "
+                    f"site left - full shutdown",
+                    f"Site failover: {decision.reason}. The cluster is therefore prepared "
+                    f"and every node of it is shut down.",
+                    db.WARNING,
+                )
 
             # Who else belongs to this cluster, and how many of them asked for this on
             # their own. Both numbers go into the announcement: a preparation that runs
@@ -2418,12 +2542,14 @@ class Engine:
                         if want_guests
                         else ""
                     )
-                    + f"; Ceph flags: {_prep_intent(sw.ceph, want_ceph, 'no Ceph')}"
-                    + self._unit_clause(host, members, due)
-                    + ". NOTHING is changed.",
+                    + f"; Ceph flags: {_prep_intent(sw.ceph, want_ceph, 'no Ceph')}."
+                    + self._unit_clause(host, members, due, force=force_unit)
+                    + " NOTHING is changed.",
                     db.WARNING,
                 )
-                extra += self._unit_additions(host, name, members, eligible, extra, reason)
+                extra += self._unit_additions(
+                    host, name, members, eligible, extra, reason, force=force_unit
+                )
                 continue
 
             if not want_ceph and not want_disarm and not want_guests:
@@ -2443,7 +2569,9 @@ class Engine:
                 # Ceph it may be the only step ticked, and its refusal must still be said.
                 if plan.requested and guest_block:
                     await self._report_guest_skip(name, plan, want_ceph)
-                extra += self._unit_additions(host, name, members, eligible, extra, reason)
+                extra += self._unit_additions(
+                    host, name, members, eligible, extra, reason, force=force_unit
+                )
                 continue
 
             # Said BEFORE the work, not only after it: the preparation is the one step
@@ -2470,7 +2598,7 @@ class Engine:
                     else ""
                 )
                 + f"; Ceph flags: {_prep_intent(sw.ceph, want_ceph, 'no Ceph')}."
-                + self._unit_clause(host, members, due)
+                + self._unit_clause(host, members, due, force=force_unit)
                 + f" The nodes of this cluster wait up to {budget}s for this"
                 + (
                     " and are held back entirely if it fails ('abort on failure')."
@@ -2515,14 +2643,16 @@ class Engine:
                     db.CRITICAL,
                 )
 
-            extra += self._unit_additions(host, name, members, eligible, extra, reason)
+            extra += self._unit_additions(
+                    host, name, members, eligible, extra, reason, force=force_unit
+                )
             # The state the field test ran into: the preparation is cluster-wide — HA
             # disarmed, with the guest stop every guest stopped — while only the nodes
             # whose own UPS triggered go down. The rest stand there without guests,
             # without HA and with the maintenance flags set, and on a hyper-converged
             # cluster their storage is gone too once the monitors follow. Said out loud
             # rather than left to be discovered afterwards.
-            if not sw.unit and len(due) < len(members):
+            if not (sw.unit or force_unit) and len(due) < len(members):
                 left = ["HA disarmed"]
                 if want_guests:
                     left.append("every guest stopped")
@@ -2783,13 +2913,182 @@ class Engine:
             source=source, needs_disarm=needs_disarm,
         )
 
+    # -- site failover (Beta, 4.4.0) ------------------------------------------
+    @staticmethod
+    def _sites(members: list[PveHostConfig]) -> dict[str, list[PveHostConfig]]:
+        """Site label -> the members carrying it. Members without a site are left out."""
+        out: dict[str, list[PveHostConfig]] = {}
+        for m in members:
+            if m.cluster_site:
+                out.setdefault(m.cluster_site, []).append(m)
+        return out
+
+    def _failover_active(self, members: list[PveHostConfig]) -> bool:
+        """Site failover applies to this cluster: two sites, and nothing that rules it out.
+
+        A conflict (the appliance not marked as running outside the cluster) can only come
+        from a hand-edited file — the API refuses it — and turns the failover OFF rather
+        than on: the behaviour without sites is the one that never strands a site, and the
+        self-test says loudly why (see _check_site_failover).
+        """
+        return len(self._sites(members)) >= 2 and not self.cfg.site_failover_conflicts()
+
+    async def _online_nodes(
+        self, members: list[PveHostConfig], going: set[str]
+    ) -> Optional[set[str]]:
+        """Who is online, as seen by a node that is NOT going down; None when unknown.
+
+        Every staying member is asked at once and the first usable answer counts. The
+        nodes on the failing side are exactly the ones that may not answer any more, and
+        asking the members one after another would cost a timeout each — on battery.
+        """
+        askers = [m for m in members if m.key not in going]
+        if not askers:
+            return None
+        answers = await asyncio.gather(*(cluster.online_nodes(m) for m in askers))
+        for answer in answers:
+            if answer is not None:
+                return set(answer)
+        return None
+
+    async def _failover_decision(
+        self, name: str, members: list[PveHostConfig],
+        eligible: list[tuple[HostConfig, str]],
+    ) -> Optional[FailoverDecision]:
+        """Partial outage or full shutdown for one cluster; None without site failover.
+
+        None is the one answer that leaves _prepare_clusters() exactly as it is for every
+        cluster without sites. Anything that goes wrong in here answers "full", never
+        "partial": the full shutdown is the path that cannot strand a site, so it is where
+        a decision that could not be made has to land.
+        """
+        if not self._failover_active(members):
+            return None
+        try:
+            return await self._decide_failover(members, eligible)
+        except Exception as exc:  # noqa: BLE001 - a failed decision is a full shutdown
+            log.exception("Site failover decision for %s failed", name)
+            return FailoverDecision(
+                partial=False, reason=f"the failover decision failed ({exc})"
+            )
+
+    async def _decide_failover(
+        self, members: list[PveHostConfig], eligible: list[tuple[HostConfig, str]]
+    ) -> FailoverDecision:
+        """Does at least one site stay up complete, every node online and on mains?
+
+        Checked live — the cluster's own view of who is online, and the UPS state of
+        every feed — rather than from what this appliance remembers, so a restart in the
+        middle of an outage or a node in maintenance is read correctly. A node that went
+        down earlier in this episode is never counted on again before the re-arm, even if
+        it answers: "online" alone cannot tell "booted again" from "still shutting down".
+        """
+        sites = self._sites(members)
+        going = (
+            {h.key for h, _ in eligible}
+            | {k for k, fired in self.host_fired.items() if fired}
+            | set(self.cluster_unit_hosts)
+        )
+        # Every site loses a node anyway: no answer about who is online could change the
+        # outcome, and asking would only cost time on battery — and with nobody left to
+        # ask, report "unreachable, or without quorum" when the plain truth is "both rooms".
+        if all(any(h.key in going for h in hosts) for hosts in sites.values()):
+            return FailoverDecision(
+                partial=False,
+                reason="no site would stay up complete (" + "; ".join(
+                    f"site {site}: "
+                    + ", ".join(f"{h.name} going down" for h in hosts if h.key in going)
+                    for site, hosts in sites.items()
+                ) + ")",
+            )
+        online = await self._online_nodes(members, going)
+        if online is None:
+            return FailoverDecision(
+                partial=False,
+                reason="no node that stays up could confirm which nodes are online "
+                "(unreachable, or without quorum)",
+            )
+
+        def gap(h: PveHostConfig) -> str:
+            if h.key in going:
+                return "going down"
+            if h.name not in online:
+                return "offline"
+            if not self._power_secured(h):
+                return "UPS not confirmed on mains"
+            return ""
+
+        intact: list[str] = []
+        missing: list[str] = []
+        for site, hosts in sites.items():
+            bad = [f"{h.name} {gap(h)}" for h in hosts if gap(h)]
+            if bad:
+                missing.append(f"site {site}: {', '.join(bad)}")
+            else:
+                intact.append(site)
+        if intact:
+            return FailoverDecision(partial=True, intact=intact)
+        return FailoverDecision(
+            partial=False,
+            reason="no site would stay up complete (" + "; ".join(missing) + ")",
+        )
+
+    async def _announce_partial(
+        self, name: str, members: list[PveHostConfig],
+        eligible: list[tuple[HostConfig, str]], decision: FailoverDecision,
+    ) -> None:
+        """Say once per cluster and set of nodes that this is a partial outage.
+
+        Keyed by the nodes going down rather than by the cluster alone, so a second
+        partial step — another node of the same room due a poll later — is said as well.
+        """
+        self.cluster_episode_mode[name] = "partial"
+        due = {h.key for h, _ in eligible}
+        going = [m for m in members if m.key in due]
+        key = (name, frozenset(m.key for m in going))
+        if key in self._partial_announced:
+            return
+        self._partial_announced.add(key)
+        stay = [m.name for m in members if m.cluster_site in decision.intact]
+        info = self.cluster_states.get(name)
+        policy = info.shutdown_policy if info else ""
+        if policy == "migrate":
+            moves = "HA migrates its guests live to the nodes that keep running"
+        elif policy == "freeze":
+            moves = (
+                "but shutdown_policy=freeze keeps the HA guests on the nodes going down - "
+                "they are NOT moved"
+            )
+        else:
+            moves = (
+                f"HA stops its guests and starts them again on the nodes that keep running "
+                f"(shutdown_policy={policy or 'conditional'}; 'migrate' would move them "
+                f"live)"
+            )
+        dry = self.cfg.dry_run
+        await self._emit(
+            f"{'DRY-RUN: ' if dry else ''}Cluster {name}: partial outage",
+            f"Only {', '.join(m.name for m in going) or 'nodes without a site'} "
+            f"{'would be' if dry else 'are'} shut down. Site "
+            f"{', '.join(decision.intact)} stays up complete ({', '.join(stay)}), so the "
+            f"cluster is not prepared: HA stays armed, no guest is stopped cluster-wide "
+            f"and no Ceph flag is set - {moves}. If no complete site is left later, the "
+            f"rest of the cluster is prepared and shut down then.",
+            db.WARNING,
+        )
+
     def _unit_clause(
-        self, host: PveHostConfig, members: list[PveHostConfig], due: list[PveHostConfig]
+        self, host: PveHostConfig, members: list[PveHostConfig], due: list[PveHostConfig],
+        force: bool = False,
     ) -> str:
-        """The "n of m nodes" half-sentence for the preparation events."""
+        """The "n of m nodes" half-sentence for the preparation events.
+
+        ``force``: site failover decided on a full shutdown, which takes the rest along
+        whatever "as a unit" says (see _prepare_clusters).
+        """
         if len(members) <= 1:
             return ""
-        want_all = self._cluster_switches(members).unit
+        want_all = force or self._cluster_switches(members).unit
         part = f" {len(due)} of {len(members)} nodes triggered"
         if len(due) == len(members):
             return part + "."
@@ -2802,7 +3101,7 @@ class Engine:
     def _unit_additions(
         self, host: PveHostConfig, name: str, members: list[PveHostConfig],
         eligible: list[tuple[HostConfig, str]], extra: list[tuple[HostConfig, str]],
-        reason: str,
+        reason: str, force: bool = False,
     ) -> list[tuple[HostConfig, str]]:
         """Nodes of this cluster that go down with it although nothing triggered for them.
 
@@ -2810,8 +3109,12 @@ class Engine:
         guest stop, stops every guest in the cluster. Shutting down only the nodes whose own UPS triggered
         leaves the others without guests, without HA and (once the monitors follow)
         without storage. This is what keeps the two halves in step.
+
+        ``force``: site failover decided that no complete site remains. The rest of the
+        cluster then cannot carry on by itself, so it goes too — "as a unit" is not what
+        decides that any more (the UI locks it while sites are set).
         """
-        if not self._cluster_switches(members).unit:
+        if not force and not self._cluster_switches(members).unit:
             return []
         taken = {h.key for h, _ in eligible} | {h.key for h, _ in extra}
         out = []
@@ -3009,7 +3312,7 @@ class Engine:
             # — but the tick is dead weight that also asks for a privilege nobody needs.
             if wants_ceph and info.ceph_unavailable:
                 warned += 1
-                await self._emit(
+                await self._hint(
                     f"Cluster {name}: Ceph flags enabled, but no Ceph found",
                     "'Set Ceph maintenance flags' is ticked, yet this cluster does not "
                     "run Ceph. The step is skipped before every shutdown. Untick it — "
@@ -3079,7 +3382,7 @@ class Engine:
                 warned += 1
                 if name not in self._disarm_unsupported_warned:
                     self._disarm_unsupported_warned.add(name)
-                    await self._emit(
+                    await self._hint(
                         f"Cluster {name}: HA disarm not available",
                         "Arming/disarming HA needs Proxmox VE 9.2 or newer. Ceph flags "
                         "are still set as configured. As an alternative, set the "
@@ -3103,7 +3406,7 @@ class Engine:
                     else ""
                 )
                 warned += 1
-                await self._emit(
+                await self._hint(
                     f"Cluster {name}: shutdown_policy is '{policy}'",
                     f"HA will not be disarmed, so on power-off the HA services are "
                     f"recovered onto nodes that are shutting down themselves."
@@ -3145,6 +3448,11 @@ class Engine:
         # safe reading, not the obvious one, and therefore worth saying out loud.
         warned = await self._check_cluster_switch_agreement(name, members)
 
+        # Site failover: nodes on different UPS devices are the whole point there, so the
+        # warning below would be noise. It gets checks of its own instead.
+        if len(self._sites(members)) >= 2:
+            return warned + await self._check_site_failover(name, info, members)
+
         feeds = {h.key: frozenset(self.cfg.feed_ids_for(h)) for h in members}
         if len(set(feeds.values())) < 2:
             return warned
@@ -3173,7 +3481,7 @@ class Engine:
                 "this cluster and not on others. The appliance goes with 'as a unit' "
                 "because any node asked for it, but set it the same way everywhere."
             )
-        await self._emit(
+        await self._hint(
             f"Cluster {name}: its nodes are fed by different UPS devices",
             ", ".join(
                 f"{h.name}: " + (", ".join(
@@ -3189,6 +3497,144 @@ class Engine:
             db.WARNING,
         )
         return warned + 1
+
+    async def _check_site_failover(
+        self, name: str, info: "cluster.ClusterInfo", members: list[PveHostConfig]
+    ) -> int:
+        """Self-test checks for a cluster whose members name two or more sites.
+
+        Each one is a reason the failover would not do what the operator expects, said at
+        self-test time rather than discovered during the outage. Returns the number of
+        warnings; the two INFO notes do not count, they are hints, not findings.
+        """
+        sites = self._sites(members)
+        conflicts = self.cfg.site_failover_conflicts()
+        if conflicts:
+            # Only reachable through a hand-edited config.yaml: the API refuses it.
+            await self._emit(
+                f"Cluster {name}: site failover is OFF",
+                f"Sites are set ({', '.join(sites)}), but {'; '.join(conflicts)}. Until "
+                f"that is fixed this cluster is handled as if it had no sites: the first "
+                f"node due prepares the whole cluster.",
+                db.CRITICAL,
+            )
+            return 1
+
+        warned = 0
+        # The appliance says it runs elsewhere. Check the claim where we can: a guest
+        # carrying this appliance's host name means it most likely runs right here.
+        if info.guests_read:
+            guest, _source = cluster.find_self_guest(info.guests, None, "", _hostname())
+            if guest is not None:
+                warned += 1
+                await self._emit(
+                    f"Cluster {name}: this appliance seems to run inside the cluster",
+                    f"{guest.label} carries this appliance's host name "
+                    f"('{_hostname()}'). Site failover needs the appliance OUTSIDE the "
+                    f"cluster: inside, it goes down with its site and nobody shuts the "
+                    f"other one down. Run it on a machine at a third location - the "
+                    f"Docker image on the quorum device's host, for example.",
+                    db.CRITICAL,
+                )
+
+        # Two sites hanging on the same UPS devices fail together, so neither ever stays.
+        feeds = {
+            s: frozenset(u for h in hs for u in self.cfg.feed_ids_for(h))
+            for s, hs in sites.items()
+        }
+        seen: dict[frozenset, str] = {}
+        for s, f in feeds.items():
+            if f in seen:
+                warned += 1
+                await self._hint(
+                    f"Cluster {name}: sites {seen[f]} and {s} share their UPS devices",
+                    "Both sites are fed by the same UPS devices, so they fail together "
+                    "and a partial outage can never happen between them. Assign each "
+                    "site's hosts the UPS that really feeds that room.",
+                    db.WARNING,
+                )
+            else:
+                seen[f] = s
+
+        if info.ha_resources and info.shutdown_policy != "migrate":
+            warned += 1
+            policy = info.shutdown_policy or "conditional (default)"
+            await self._hint(
+                f"Cluster {name}: shutdown_policy is '{policy}'",
+                "With site failover the nodes of a failing site are shut down with HA "
+                "armed, and the datacenter's shutdown_policy decides what happens to the "
+                "HA guests: 'migrate' moves them live to the site that stays up, "
+                "'conditional' stops them and starts them there again, 'freeze' leaves "
+                "them where they are. Recommended: shutdown_policy=migrate.",
+                db.WARNING,
+            )
+
+        if not any(h.cluster_ha_disarm for h in members) or info.disarm_unavailable:
+            warned += 1
+            await self._hint(
+                f"Cluster {name}: a full outage cannot be prepared",
+                "When no complete site is left, the cluster is prepared before it goes "
+                "down - and that starts with disarming HA, which needs Proxmox VE 9.2+ "
+                "and 'Disarm the HA manager' on the host cards. Without it the last site "
+                "goes down with HA armed.",
+                db.WARNING,
+            )
+
+        if self.cfg.thresholds.rearm_after_mains_min is None:
+            warned += 1
+            await self._hint(
+                f"Cluster {name}: automatic re-arm is off",
+                "The nodes of a site that went down stay marked as down until the "
+                "appliance re-arms. With the automatic re-arm off that only happens on a "
+                "manual reset, so until then a failure of the other site always shuts the "
+                "whole cluster down. Set 'Re-arm after mains back (min)' under Triggers.",
+                db.WARNING,
+            )
+
+        # Ceph monitors are in the monmap, a tiebreaker outside both sites included, so
+        # this one can be checked. Corosync's quorum device cannot be seen from the API
+        # this appliance reads, so the node count is only a hint.
+        for s, hs in sites.items():
+            gone = {h.name for h in hs}
+            if info.mon_nodes:
+                left = [m for m in info.mon_nodes if m not in gone]
+                if len(left) * 2 <= len(info.mon_nodes):
+                    warned += 1
+                    await self._hint(
+                        f"Cluster {name}: Ceph loses its quorum without site {s}",
+                        f"Without site {s} only {len(left)} of {len(info.mon_nodes)} Ceph "
+                        f"monitors remain, so the other site cannot carry on: Ceph stops "
+                        f"all IO. A stretched cluster needs a tiebreaker monitor outside "
+                        f"both sites (Ceph stretch mode).",
+                        db.WARNING,
+                    )
+            total = len(info.nodes)
+            left_nodes = total - len(gone & set(info.nodes))
+            note = (name, f"quorum:{s}")
+            if total and left_nodes * 2 <= total and note not in self._site_notes:
+                self._site_notes.add(note)
+                self._log_quiet(
+                    f"Cluster {name}: check the quorum without site {s}",
+                    f"Without site {s} only {left_nodes} of {total} nodes remain, which is "
+                    f"no majority on its own. The other site keeps quorum only with a vote "
+                    f"from a third location - a QDevice or a witness node. This appliance "
+                    f"cannot see a QDevice; if there is none, an armed HA manager fences "
+                    f"(reboots) the remaining nodes.",
+                    db.INFO,
+                )
+
+        unsited = [h.name for h in members if not h.cluster_site]
+        note = (name, "unsited:" + ",".join(sorted(unsited)))
+        if unsited and note not in self._site_notes:
+            self._site_notes.add(note)
+            self._log_quiet(
+                f"Cluster {name}: nodes without a site",
+                f"{', '.join(unsited)} carry no site, so they never count as able to carry "
+                f"the cluster on their own - right for a witness or quorum-only node. If "
+                f"one of them is a full node, give it the site it stands in.",
+                db.INFO,
+            )
+        return warned
 
     async def _check_cluster_switch_agreement(
         self, name: str, members: list[PveHostConfig]
@@ -3224,7 +3670,7 @@ class Engine:
             if not on or not off:
                 continue
             warned += 1
-            await self._emit(
+            await self._hint(
                 f"Cluster {name}: '{label}' is not set the same on every node",
                 f"On: {', '.join(on)}. Off: {', '.join(off)}. This switch acts on the "
                 f"whole cluster, so it cannot be half on: {effect}, because at least one "
@@ -3273,7 +3719,7 @@ class Engine:
         ]
         if not outsiders:
             return 0
-        await self._emit(
+        await self._hint(
             # Deliberately not worded "not every node ...": the coverage warning
             # above already opens that way, and two events whose subjects differ only
             # after the sixth word are two events nobody tells apart in a feed.
@@ -3403,7 +3849,7 @@ class Engine:
         report = cluster.mon_order_report(order, info.mon_nodes, this_node)
         if report:
             warned += 1
-            await self._emit(f"Cluster {name}: MON nodes are not shut down last",
+            await self._hint(f"Cluster {name}: MON nodes are not shut down last",
                              report, db.WARNING)
 
         return warned
@@ -3485,6 +3931,21 @@ class Engine:
         await self._emit(subject, body, severity)
 
     # -- notifications + event log ------------------------------------------
+    async def _hint(self, subject: str, body: str, severity: str) -> None:
+        """Emit a configuration hint from the self-test (#50).
+
+        A hint describes a setup that works as configured: the appliance spells out a
+        consequence of it or recommends something. A fault — something that will fail, is
+        missing, or is left over from an earlier outage — goes through _emit() directly.
+        The difference only matters to the webhooks, which may opt out of hints
+        (WebhookConfig.config_hints); the event log and the dashboard show both alike.
+        """
+        token = _EMITTING_HINT.set(True)
+        try:
+            await self._emit(subject, body, severity)
+        finally:
+            _EMITTING_HINT.reset(token)
+
     async def _emit(self, subject: str, body: str, severity: str) -> None:
         log.log(
             logging.WARNING if severity != db.INFO else logging.INFO,
@@ -3497,7 +3958,10 @@ class Engine:
         except Exception as exc:  # noqa: BLE001
             log.warning("Event log write failed: %s", exc)
         await notify.notify(
-            self.cfg.notifications, f"[PVE-UPS] {subject}", body, self.snapshot(), severity
+            self.cfg.notifications, f"[PVE-UPS] {subject}", body, self.snapshot(), severity,
+            # Never for a CRITICAL, whoever called: muting hints must not be able to mute
+            # something that stands between the estate and a clean shutdown.
+            hint=_EMITTING_HINT.get() and severity != db.CRITICAL,
         )
 
     # -- status snapshot for the REST API -----------------------------------
@@ -3531,6 +3995,9 @@ class Engine:
             "runtime_remaining_min": st.runtime_remaining_min,
             "battery_charge_pct": st.battery_charge_pct,
             "load_pct": st.load_pct,
+            # Watts, measured or estimated from the load (sources.estimate_power, #47).
+            "power_w": st.power_w,
+            "power_estimated": st.power_estimated,
             # Both only while the UPS really is on battery. This used to be passed through
             # whatever the state, so a card holding on to the last transfer's counter read
             # as a multi-day outage on a UPS sitting happily on mains.
@@ -3767,6 +4234,22 @@ class Engine:
                     "guest_stop": plan.requested,
                     "self_guest_missing": plan.block.startswith("own guest"),
                     "prep_steps": list(self.cluster_prep_steps.get(name, [])),
+                    **self._site_snapshot(name, self._cluster_members(info, name)),
                 }
             )
         return out
+
+    def _site_snapshot(self, name: str, members: list[PveHostConfig]) -> dict:
+        """The site-failover half of one cluster's snapshot entry.
+
+        ``sites`` maps each site to its nodes, ``unsited`` lists the members without one,
+        ``failover`` says whether it is in effect (two sites, no conflict) and
+        ``episode_mode`` what this outage was handled as ("partial" / "full" / "").
+        """
+        sites = self._sites(members)
+        return {
+            "sites": {s: [h.name for h in hs] for s, hs in sites.items()},
+            "unsited": [h.name for h in members if not h.cluster_site] if sites else [],
+            "failover": self._failover_active(members),
+            "episode_mode": self.cluster_episode_mode.get(name, ""),
+        }

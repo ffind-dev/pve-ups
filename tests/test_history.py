@@ -329,3 +329,63 @@ def test_history_endpoints_require_a_login(monkeypatch):
     for method, url in (("get", "/api/history"), ("get", "/api/history.csv"),
                         ("get", "/api/history/info"), ("delete", "/api/history")):
         assert getattr(client, method)(url).status_code == 401, url
+
+
+# --- #47: power in watts ----------------------------------------------------------
+def test_an_old_history_file_gets_the_power_column_and_keeps_its_rows(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE samples (ups_id TEXT NOT NULL, ts INTEGER NOT NULL, "
+                 "state TEXT NOT NULL, on_battery INTEGER NOT NULL DEFAULT 0, "
+                 "triggered INTEGER NOT NULL DEFAULT 0, runtime_min INTEGER, "
+                 "charge_pct INTEGER, load_pct INTEGER)")
+    conn.execute("INSERT INTO samples VALUES ('u', 1800000000, 'mains', 0, 0, 30, 100, 40)")
+    conn.commit()
+    conn.close()
+
+    history.write([_row(1_800_000_060) + (420,)], path=path)
+    out = history.query([("u", "UPS")], 1_799_999_000, 1_800_000_100, path=path,
+                        now=1_800_000_100)
+
+    assert [p[4] for p in out["ups"][0]["points"]] == [None, 420]
+
+
+def test_power_is_bucketed_with_max_and_reported_per_outage():
+    now = 1_800_000_000
+    rows = [_row(now - 90 * 86400 + i * 60) + (300 + i,) for i in range(30)]
+    rows += [_row(now - 600 + i * 8, "battery", 1) + (500 + i,) for i in range(5)]
+    rows += [_row(now - 400)]
+    history.write(rows)
+
+    out = history.query([("u", "UPS")], now - 90 * 86400, now, now=now)
+    powers = [p[4] for p in out["ups"][0]["points"] if p[4] is not None]
+    assert max(powers) == 504
+    assert powers[0] == 329, "MAX, not the first sample of the bucket"
+    assert out["outages"][0]["max_power"] == 504
+
+
+def test_the_csv_carries_the_power_as_its_last_column():
+    now = 1_800_000_000
+    history.write([_row(now - 60) + (310,)])
+
+    lines = history.csv_export([("u", "Rack A")], now - 3600, now).strip().splitlines()
+
+    assert lines[0].endswith(",load_pct,power_w")
+    assert lines[1].endswith(",40,310")
+
+
+@pytest.mark.asyncio
+async def test_the_sampler_records_the_power():
+    eng = _engine()
+    eng.ups_rt["u"].state = UpsState(reachable=True, power_source="mains", load_pct=40,
+                                     power_w=324)
+    eng.ups_rt["u"].state.last_poll = eng.started_at
+
+    eng._maybe_record_history()
+    await _drain(eng)
+
+    now = int(time.time())
+    text = history.csv_export([("u", "UPS")], now - 3600, now + 60)
+    assert text.strip().splitlines()[1].endswith(",40,324")

@@ -9957,3 +9957,855 @@ async def test_abort_on_failure_also_holds_back_the_taken_along_nodes(monkeypatc
 
     assert eng.cluster_prep_failed["prod"] is True
     assert fired == [], "a held-back cluster shuts down no node of it, taken-along or not"
+
+
+# --- site failover (Beta, 4.4.0) ----------------------------------------------
+# Two rooms, each with its own UPS: pve01/pve02 form site A on UPS-A, pve03/pve04 site B on
+# UPS-B. Only UPS-A has failed unless a test says otherwise (see _split_feed_engine).
+
+
+class _SiteServer(_CephServer):
+    """The shared fake cluster, plus nodes that are offline and a status that can fail.
+
+    ``status_ok_calls``: how many /cluster/status reads answer before the endpoint starts
+    failing — the cold inspection reads it once, the failover's online read after that.
+    """
+
+    def __init__(self, *, offline=(), status_ok_calls=None, **kw):
+        super().__init__(**kw)
+        self.offline = set(offline)
+        self.status_ok_calls = status_ok_calls
+        self.status_calls = 0
+
+    async def get(self, url, **kw):
+        if url == "/cluster/status":
+            self.calls.append(("GET", url))
+            self.status_calls += 1
+            if self.status_ok_calls is not None and self.status_calls > self.status_ok_calls:
+                return _FakeJson(500, {})
+            return _FakeJson(200, {"data": [
+                {"type": "cluster", "name": "prod", "quorate": 1, "nodes": len(self.nodes)},
+            ] + [{"type": "node", "name": n, "online": int(n not in self.offline)}
+                 for n in self.nodes]})
+        return await super().get(url, **kw)
+
+
+def _site_srv(**kw):
+    """_srv4's cluster (four nodes, three guests) as a _SiteServer."""
+    kw.setdefault("nodes", ("pve01", "pve02", "pve03", "pve04"))
+    kw.setdefault("guests", [
+        {"vmid": 950, "node": "pve01", "type": "lxc", "name": "pve-usv", "status": "running"},
+        {"vmid": 100, "node": "pve02", "type": "qemu", "name": "web", "status": "running"},
+        {"vmid": 101, "node": "pve04", "type": "lxc", "name": "db", "status": "running"},
+    ])
+    kw.setdefault("mons", ("pve01", "pve02", "pve03"))
+    return _SiteServer(**kw)
+
+
+def _site_engine(monkeypatch, srv, **kw):
+    """_split_feed_engine with two sites and the appliance running outside the cluster."""
+    eng = _split_feed_engine(monkeypatch, srv, **kw)
+    for h in eng.cfg.hosts:
+        h.cluster_site = "A" if h.name in ("pve01", "pve02") else "B"
+    eng.cfg.appliance.self_external = True
+    eng.cfg.appliance.self_vmid = None
+    eng.cfg.appliance.self_node = ""
+    return eng
+
+
+def _disarms(srv) -> int:
+    return len([c for c in srv.calls if c == ("POST", "/cluster/ha/status/disarm-ha")])
+
+
+def _ups_low(eng, uid):
+    eng.ups_rt[uid].state = UpsState(reachable=True, power_source="battery",
+                                      battery_status="low")
+
+
+@pytest.mark.asyncio
+async def test_site_failover_shuts_down_only_the_failing_site(monkeypatch):
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    events = _notify_recorder(eng)
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert [n for n, _ in fired] == ["pve01", "pve02"]
+    assert _disarms(srv) == 0, "a partial outage must not disarm HA"
+    assert not [c for c in srv.calls if c[0] == "PUT"], "nor set any Ceph flag"
+    assert not [c for c in srv.calls if "/status/shutdown" in c[1]], "nor stop guests"
+    assert eng.cluster_prepared == {}
+    assert eng.cluster_episode_mode == {"prod": "partial"}
+    subjects = [s for s, _, _ in events]
+    assert "Cluster prod: partial outage" in subjects
+    assert not any("only part of the cluster" in s for s in subjects)
+
+
+@pytest.mark.asyncio
+async def test_site_failover_goes_full_when_the_other_site_is_incomplete(monkeypatch):
+    """pve04 is in maintenance: site B would be left with one node, which cannot carry
+    Ceph on its own. Better a prepared full shutdown than a half site dying unprepared."""
+    srv = _site_srv(offline=("pve04",))
+    eng = _site_engine(monkeypatch, srv)
+    events = _notify_recorder(eng)
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert _disarms(srv) == 1
+    assert [n for n, _ in fired] == ["pve01", "pve02", "pve03", "pve04"]
+    assert "shut down as a unit" in dict(fired)["pve03"]
+    full = [b for s, _, b in events if s == "Cluster prod: no complete site left - full shutdown"]
+    assert full and "pve04 offline" in full[0]
+    assert eng.cluster_episode_mode == {"prod": "full"}
+
+
+@pytest.mark.asyncio
+async def test_site_failover_never_counts_a_node_without_a_site(monkeypatch):
+    """A witness answering is no reason to leave anything running: it carries no data."""
+    srv = _site_srv(nodes=("pve01", "pve02", "pve03", "pve04", "pve05"),
+                    offline=("pve03", "pve04"))
+    eng = _site_engine(monkeypatch, srv, nodes=5)
+    for h in eng.cfg.hosts:
+        if h.name == "pve05":
+            h.cluster_site = ""          # the witness
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert _disarms(srv) == 1
+    assert "pve05" in [n for n, _ in fired]
+
+
+@pytest.mark.asyncio
+async def test_site_failover_goes_full_when_nobody_can_confirm_who_is_online(monkeypatch):
+    # The cold inspection reads the status once; every read after that fails.
+    srv = _site_srv(status_ok_calls=1)
+    eng = _site_engine(monkeypatch, srv)
+    events = _notify_recorder(eng)
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert _disarms(srv) == 1
+    assert len(fired) == 4
+    body = next(b for s, _, b in events if s.endswith("full shutdown"))
+    assert "could confirm which nodes are online" in body
+
+
+@pytest.mark.asyncio
+async def test_site_failover_both_sites_at_once_prepares_once(monkeypatch):
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    _ups_low(eng, "b")
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert _disarms(srv) == 1
+    assert [n for n, _ in fired] == ["pve01", "pve02", "pve03", "pve04"]
+
+
+@pytest.mark.asyncio
+async def test_site_failover_other_site_on_battery_is_not_a_place_to_fail_over_to(monkeypatch):
+    """UPS-B is on battery but has not triggered yet: migrating site A's guests there
+    would only move them into the next outage, with the disarm landing in the middle of
+    the migrations. The whole cluster goes, prepared, at once."""
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    eng.ups_rt["b"].state = UpsState(reachable=True, power_source="battery",
+                                     battery_status="normal")
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert _disarms(srv) == 1
+    assert "shut down as a unit" in dict(fired)["pve03"]
+
+
+@pytest.mark.asyncio
+async def test_site_failover_an_unreachable_ups_does_not_count_as_mains(monkeypatch):
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    eng.ups_rt["b"].state = UpsState(reachable=False)
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert _disarms(srv) == 1
+    assert len(fired) == 4
+
+
+@pytest.mark.asyncio
+async def test_site_failover_second_site_later_is_prepared_then(monkeypatch):
+    """Room A first, room B an hour later: the first is partial, the second is the last
+    of the cluster and goes down prepared - once."""
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    events = _notify_recorder(eng)
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+    assert [n for n, _ in fired] == ["pve01", "pve02"] and _disarms(srv) == 0
+
+    srv.offline = {"pve01", "pve02"}     # site A is down by now
+    _ups_low(eng, "b")
+    await eng._evaluate()
+
+    assert [n for n, _ in fired] == ["pve01", "pve02", "pve03", "pve04"]
+    assert _disarms(srv) == 1
+    assert eng.cluster_prepared == {"prod": True}
+    assert eng.cluster_episode_mode == {"prod": "full"}
+    assert "Cluster prod: preparing for shutdown" in [s for s, _, _ in events]
+
+    await eng._evaluate()
+    assert _disarms(srv) == 1, "and never twice"
+
+
+@pytest.mark.asyncio
+async def test_site_failover_reads_the_cluster_not_its_memory_after_a_restart(monkeypatch):
+    """A restart forgets which nodes went down. Site A's UPS has died in the meantime
+    (unreachable, so it triggers nothing), its nodes are offline - and site B is due."""
+    srv = _site_srv(offline=("pve01", "pve02"))
+    eng = _site_engine(monkeypatch, srv)
+    eng.ups_rt["a"].state = UpsState(reachable=False)
+    _ups_low(eng, "b")
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert _disarms(srv) == 1
+    assert {"pve03", "pve04"} <= {n for n, _ in fired}
+
+
+@pytest.mark.asyncio
+async def test_site_failover_works_the_other_way_round(monkeypatch):
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    eng.ups_rt["a"].state = UpsState(reachable=True, power_source="mains")
+    _ups_low(eng, "b")
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert [n for n, _ in fired] == ["pve03", "pve04"]
+    assert _disarms(srv) == 0
+
+
+@pytest.mark.asyncio
+async def test_site_failover_a_node_that_went_down_is_not_counted_on_before_the_rearm(
+    monkeypatch,
+):
+    """Back online but still latched: "online" cannot tell a node that booted again from
+    one that is still shutting down, so it is not a place to fail over to yet."""
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+
+    async def sent(host, reason):
+        # A shutdown that really went out: only those keep their latch once the UPS
+        # is back (_evaluate_hosts releases uncommitted ones).
+        eng.host_fired[host.key] = True
+        eng.host_states.setdefault(host.key, {})["shutdown_state"] = "sent"
+
+    eng._fire_host = sent  # type: ignore[assignment]
+    await eng._evaluate()                     # site A: partial
+    assert _disarms(srv) == 0
+    eng.ups_rt["a"].state = UpsState(reachable=True, power_source="mains")
+    eng.ups_rt["a"].on_battery_since = None
+    _ups_low(eng, "b")
+
+    await eng._evaluate()
+
+    assert _disarms(srv) == 1
+
+
+@pytest.mark.asyncio
+async def test_site_failover_a_failed_decision_is_a_full_shutdown(monkeypatch):
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    fired = _fire_recorder(eng)
+
+    async def broken(*a, **kw):
+        raise RuntimeError("boom")
+
+    eng._decide_failover = broken  # type: ignore[assignment]
+    await eng._evaluate()
+
+    assert _disarms(srv) == 1
+    assert len(fired) == 4
+
+
+@pytest.mark.asyncio
+async def test_one_site_label_changes_nothing(monkeypatch):
+    """Failover needs two sites. One label alone leaves the cluster exactly as before:
+    "as a unit" takes everything down, as in test_one_ups_takes_the_whole_cluster_down."""
+    srv = _srv4()
+    eng = _split_feed_engine(monkeypatch, srv)
+    eng.cfg.hosts[0].cluster_site = "A"
+    eng.cfg.appliance.self_external = True
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert [n for n, _ in fired] == ["pve01", "pve02", "pve03", "pve04"]
+    assert eng.cluster_episode_mode == {}
+
+
+@pytest.mark.asyncio
+async def test_without_sites_the_event_log_and_api_calls_are_unchanged(monkeypatch):
+    """The regression guard of 4.4.0: a cluster without sites makes exactly the calls and
+    writes exactly the events it made before - no online read, no new event."""
+    srv = _srv4()
+    eng = _split_feed_engine(monkeypatch, srv)
+    events = _notify_recorder(eng)
+    _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    assert len([c for c in srv.calls if c == ("GET", "/cluster/status")]) == 1, (
+        "only the cold inspection reads the status; failover would read it again"
+    )
+    subjects = [s for s, _, _ in events]
+    assert not any("partial outage" in s or "complete site" in s for s in subjects)
+    assert "Cluster prod: preparing for shutdown" in subjects
+
+
+@pytest.mark.asyncio
+async def test_site_failover_stays_off_for_a_hand_edited_conflict(monkeypatch):
+    """Sites, but the appliance not marked as running outside: only possible by editing
+    config.yaml by hand (the API refuses it). The failover stays OFF - the old behaviour -
+    and the self-test says so as CRITICAL."""
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    eng.cfg.appliance.self_external = False
+    events = _notify_recorder(eng)
+    fired = _fire_recorder(eng)
+
+    await eng._evaluate()
+    assert len(fired) == 4 and _disarms(srv) == 1
+
+    await eng._check_clusters()
+    off = [(sev, b) for s, sev, b in events if s == "Cluster prod: site failover is OFF"]
+    assert off and off[0][0] == "critical"
+    assert "outside the cluster" in off[0][1]
+
+
+@pytest.mark.asyncio
+async def test_site_failover_selftest_spots_the_appliance_inside_the_cluster(monkeypatch):
+    from app import engine as engine_mod
+
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    monkeypatch.setattr(engine_mod, "_hostname", lambda: "web")   # guest 100 is "web"
+    events = _notify_recorder(eng)
+
+    await eng._check_clusters()
+
+    hit = [(sev, b) for s, sev, b in events if "seems to run inside the cluster" in s]
+    assert hit and hit[0][0] == "critical" and "VM 100 'web'" in hit[0][1]
+
+
+@pytest.mark.asyncio
+async def test_site_failover_selftest_replaces_the_feed_warning(monkeypatch):
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    events = _notify_recorder(eng)
+
+    await eng._check_clusters()
+
+    subjects = [s for s, _, _ in events]
+    assert not any("different UPS devices" in s for s in subjects)
+    # The fake runs shutdown_policy=freeze: guests would not move.
+    assert "Cluster prod: shutdown_policy is 'freeze'" in subjects
+    body = next(b for s, _, b in events if s == "Cluster prod: shutdown_policy is 'freeze'")
+    assert "shutdown_policy=migrate" in body
+
+
+@pytest.mark.asyncio
+async def test_site_failover_selftest_flags_sites_sharing_their_ups(monkeypatch):
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    for h in eng.cfg.hosts:
+        h.ups_ids = ["a"]
+    events = _notify_recorder(eng)
+
+    await eng._check_clusters()
+
+    assert "Cluster prod: sites A and B share their UPS devices" in [s for s, _, _ in events]
+
+
+@pytest.mark.asyncio
+async def test_site_failover_selftest_checks_the_ceph_monitor_majority(monkeypatch):
+    # Two of three monitors in site A: without it, Ceph has no quorum.
+    srv = _site_srv(mons=("pve01", "pve02", "pve03"))
+    eng = _site_engine(monkeypatch, srv)
+    events = _notify_recorder(eng)
+
+    await eng._check_clusters()
+
+    subjects = [s for s, _, _ in events]
+    assert "Cluster prod: Ceph loses its quorum without site A" in subjects
+    assert "Cluster prod: Ceph loses its quorum without site B" not in subjects
+
+
+@pytest.mark.asyncio
+async def test_site_failover_preview_describes_every_site(monkeypatch):
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    await eng._check_clusters()
+
+    msg = await eng.simulate_shutdown()
+
+    assert "site A fails alone -> pve01, pve02 go down, HA moves their guests" in msg
+    assert "site B fails alone -> pve03, pve04 go down" in msg
+    assert "no complete site left -> the steps above, then every node" in msg
+
+
+@pytest.mark.asyncio
+async def test_site_failover_snapshot_carries_the_sites(monkeypatch):
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    await eng._check_clusters()
+    _fire_recorder(eng)
+    await eng._evaluate()
+
+    snap = eng.cluster_snapshot()[0]
+
+    assert snap["sites"] == {"A": ["pve01", "pve02"], "B": ["pve03", "pve04"]}
+    assert snap["failover"] is True
+    assert snap["episode_mode"] == "partial"
+    assert snap["unsited"] == []
+
+
+def test_site_failover_budget_counts_the_online_read():
+    from app import cluster
+    from app.engine import shutdown_budget
+
+    hosts = [PveHostConfig(name=f"pve0{i}", api_url=f"https://pve0{i}:8006",
+                           cluster=True, order=i) for i in range(1, 5)]
+    plain = shutdown_budget(AppConfig(hosts=hosts))
+    for i, h in enumerate(hosts):
+        h.cluster_site = "A" if i < 2 else "B"
+    sited = shutdown_budget(AppConfig(hosts=hosts))
+
+    assert sited.inspect_s - plain.inspect_s == int(
+        cluster.ONLINE_READ_BUDGET_S + cluster.DEADLINE_GRACE_S)
+
+
+# --- configuration: the site label and what may be saved with it --------------
+
+
+def test_cluster_site_is_trimmed_capped_and_never_rejected():
+    from app.config import SITE_LABEL_MAX
+
+    h = PveHostConfig(name="pve01", api_url="https://x:8006", cluster_site="  Room A  ")
+    assert h.cluster_site == "Room A"
+    h = PveHostConfig(name="pve01", api_url="https://x:8006", cluster_site="x" * 99)
+    assert len(h.cluster_site) == SITE_LABEL_MAX
+    h = PveHostConfig(name="pve01", api_url="https://x:8006", cluster_site=7)
+    assert h.cluster_site == ""
+    assert PveHostConfig(name="pve01", api_url="https://x:8006").cluster_site == ""
+
+
+def _site_cfg(**appliance) -> AppConfig:
+    from app.config import ApplianceConfig
+
+    hosts = [
+        PveHostConfig(name=n, api_url=f"https://{n}:8006", cluster=True, cluster_site=s)
+        for n, s in (("pve01", "A"), ("pve02", "A"), ("pve03", "B"), ("pve04", "B"))
+    ]
+    return AppConfig(hosts=hosts, appliance=ApplianceConfig(**appliance))
+
+
+def test_site_failover_conflicts():
+    assert _site_cfg(self_external=True).site_failover_conflicts() == []
+    assert "outside the cluster" in _site_cfg().site_failover_conflicts()[0]
+
+    cfg = _site_cfg(self_external=True)
+    cfg.hosts[2].this_host = True
+    assert "pve03 is marked as the host carrying this appliance" in (
+        cfg.site_failover_conflicts()[0])
+
+    # One site is no failover, so nothing can conflict with it.
+    cfg = _site_cfg()
+    for h in cfg.hosts:
+        h.cluster_site = "A"
+    assert cfg.site_failover_conflicts() == []
+    # A site on a host without the cluster tick does not count.
+    cfg = _site_cfg()
+    for h in cfg.hosts[2:]:
+        h.cluster = False
+    assert cfg.cluster_sites().keys() == {"A"}
+
+
+@pytest.mark.asyncio
+async def test_saving_sites_without_an_external_appliance_is_refused(_import_target):
+    from fastapi import HTTPException
+
+    main, saved = _import_target
+    with pytest.raises(HTTPException) as err:
+        await main.api_set_config(main._exportable_config(_site_cfg()))
+    assert err.value.status_code == 400
+    assert "outside the cluster" in err.value.detail
+    assert saved == []
+
+    with pytest.raises(HTTPException) as err:
+        await main.api_config_import(main._exportable_config(_site_cfg()))
+    assert err.value.status_code == 400 and saved == []
+
+    await main.api_set_config(main._exportable_config(_site_cfg(self_external=True)))
+    assert len(saved) == 1
+
+
+# --- the guest stop follows its guests (4.4.0) --------------------------------
+
+
+class _MovingGuestServer(_CephServer):
+    """Guests live on one node, and a request addressed to any other node fails the way
+    Proxmox fails it. ``locked`` guests refuse a graceful shutdown that many times."""
+
+    def __init__(self, *, locked=None, resources_fail=0, **kw):
+        super().__init__(**kw)
+        self.locked = dict(locked or {})
+        self.resources_fail = resources_fail
+
+    async def get(self, url, **kw):
+        if url == "/cluster/resources?type=vm" and self.resources_fail > 0:
+            self.resources_fail -= 1
+            self.calls.append(("GET", url))
+            return _FakeJson(500, {})
+        return await super().get(url, **kw)
+
+    async def _guest_power(self, url):
+        node = url.split("/")[2]
+        vmid = int(url.split("/status/")[0].rsplit("/", 1)[1])
+        guest = self.guests.get(vmid)
+        if guest is not None and guest["node"] != node:
+            return _FakeJson(500, {})        # "Configuration file ... does not exist"
+        if url.endswith("/status/shutdown") and self.locked.get(vmid, 0) > 0:
+            self.locked[vmid] -= 1
+            return _FakeJson(500, {})        # "VM is locked (migrate)"
+        return await super()._guest_power(url)
+
+
+def _stale(vmid, node, kind="qemu", name="vm"):
+    from app.cluster import GuestInfo
+
+    return GuestInfo(vmid=vmid, node=node, kind=kind, name=name, status="running")
+
+
+async def _prepare_guests(monkeypatch, srv, known, force_after_s=None):
+    from app import cluster
+
+    monkeypatch.setattr(cluster.httpx, "AsyncClient", srv)
+    monkeypatch.setattr(cluster, "_VERIFY_INTERVAL_S", 0.01)
+    monkeypatch.setattr(cluster, "_GUEST_POLL_INTERVAL_S", 0.01)
+    host = PveHostConfig(name="pve01", api_url="https://pve:8006",
+                         token_id="ups@pve!x", token_secret="s", cluster=True)
+    return await cluster.prepare(
+        host, want_disarm=True, want_guests=True, guests=known, timeout=5,
+        guest_timeout=5, force_after_s=force_after_s,
+    )
+
+
+@pytest.mark.asyncio
+async def test_guest_stop_goes_to_where_a_guest_is_now(monkeypatch):
+    """Listed on pve02 by the last self-test, migrated to pve04 since."""
+    srv = _MovingGuestServer(guests=[
+        {"vmid": 101, "node": "pve04", "type": "qemu", "name": "db", "status": "running"},
+    ])
+
+    result = await _prepare_guests(monkeypatch, srv, [_stale(101, "pve02", name="db")])
+
+    assert result.ok, result.message
+    assert ("POST", "/nodes/pve04/qemu/101/status/shutdown") in srv.calls
+    assert not [c for c in srv.calls if "/nodes/pve02/" in c[1]]
+    assert "1 moved, 0 started since the last inspection" in result.message
+
+
+@pytest.mark.asyncio
+async def test_guest_stop_includes_a_guest_started_after_the_last_inspection(monkeypatch):
+    srv = _MovingGuestServer(guests=[
+        {"vmid": 100, "node": "pve01", "type": "qemu", "name": "web", "status": "running"},
+        {"vmid": 102, "node": "pve02", "type": "qemu", "name": "new", "status": "running"},
+    ])
+
+    result = await _prepare_guests(monkeypatch, srv, [_stale(100, "pve01", name="web")])
+
+    assert result.ok, result.message
+    assert srv.guests[102]["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_guest_stop_asks_a_locked_guest_again_instead_of_forcing_it(monkeypatch):
+    """Mid-migration a guest refuses ("locked"). It used to sit out the grace period and
+    be force-stopped; now it is asked again on every re-read until it accepts."""
+    srv = _MovingGuestServer(locked={101: 2}, guests=[
+        {"vmid": 101, "node": "pve02", "type": "qemu", "name": "db", "status": "running"},
+    ])
+
+    result = await _prepare_guests(monkeypatch, srv, [_stale(101, "pve02", name="db")],
+                                   force_after_s=60)
+
+    assert result.ok, result.message
+    assert srv.guests[101]["status"] == "stopped"
+    assert not [c for c in srv.calls if c[1].endswith("/status/stop")], "never forced"
+    assert "shutdown accepted on a later attempt" in result.message
+
+
+@pytest.mark.asyncio
+async def test_guest_stop_falls_back_to_the_known_list_when_the_reread_fails(monkeypatch):
+    srv = _MovingGuestServer(resources_fail=1, guests=[
+        {"vmid": 100, "node": "pve01", "type": "qemu", "name": "web", "status": "running"},
+    ])
+
+    result = await _prepare_guests(monkeypatch, srv, [_stale(100, "pve01", name="web")])
+
+    assert result.ok, result.message
+    assert "could not be re-read after the HA disarm" in result.message
+    assert srv.guests[100]["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_guest_reread_never_drops_a_guest_the_answer_does_not_mention(monkeypatch):
+    """/cluster/resources filters by privilege. A guest missing from the fresh answer is
+    kept as it was known - the re-read may only ever add precision, never lose a guest."""
+    from app import cluster
+
+    srv = _MovingGuestServer(guests=[])
+    monkeypatch.setattr(cluster.httpx, "AsyncClient", srv)
+    async with cluster._client(_site_cfg().hosts[0], 5) as client:
+        merged, _note = await cluster._current_guests(
+            client, [_stale(100, "pve01")], 5)
+
+    assert [g.vmid for g in merged] == [100]
+
+
+@pytest.mark.asyncio
+async def test_online_nodes_answers_none_without_quorum(monkeypatch):
+    from app import cluster
+
+    class _NoQuorum(_SiteServer):
+        async def get(self, url, **kw):
+            if url == "/cluster/status":
+                return _FakeJson(200, {"data": [
+                    {"type": "cluster", "name": "prod", "quorate": 0},
+                    {"type": "node", "name": "pve03", "online": 1},
+                ]})
+            return await super().get(url, **kw)
+
+    monkeypatch.setattr(cluster.httpx, "AsyncClient", _NoQuorum())
+    assert await cluster.online_nodes(_site_cfg().hosts[2]) is None
+
+    monkeypatch.setattr(cluster.httpx, "AsyncClient", _site_srv(offline=("pve02",)))
+    assert await cluster.online_nodes(_site_cfg().hosts[2]) == ["pve01", "pve03", "pve04"]
+
+
+@pytest.mark.asyncio
+async def test_site_failover_both_sites_down_names_the_sites_not_the_network(monkeypatch):
+    """With every site losing a node there is nobody left to ask who is online.
+
+    The reason must say that, rather than suggest an unreachable cluster or lost quorum -
+    and the read is skipped altogether, since no answer could change the outcome.
+    """
+    srv = _site_srv()
+    eng = _site_engine(monkeypatch, srv)
+    _ups_low(eng, "b")
+    events = _notify_recorder(eng)
+    _fire_recorder(eng)
+
+    async def no_read(*a, **kw):
+        raise AssertionError("the online read must be skipped")
+
+    eng._online_nodes = no_read  # type: ignore[assignment]
+
+    await eng._evaluate()
+
+    body = next(b for s, _, b in events if s.endswith("full shutdown"))
+    assert "site A: pve01 going down, pve02 going down" in body
+    assert "site B: pve03 going down, pve04 going down" in body
+    assert "could confirm" not in body
+
+
+@pytest.mark.asyncio
+async def test_dry_run_prepare_event_has_a_single_full_stop(monkeypatch):
+    srv = _srv4()
+    eng = _split_feed_engine(monkeypatch, srv, dry_run=True)
+    events = _notify_recorder(eng)
+    _fire_recorder(eng)
+
+    await eng._evaluate()
+
+    body = next(b for s, _, b in events if s.endswith("would be prepared"))
+    assert ".." not in body
+    assert "2 of 4 nodes triggered" in body
+    assert body.endswith("shut down with them. NOTHING is changed.")
+
+
+# --- #50: configuration hints can be muted per webhook --------------------------
+@pytest.mark.asyncio
+async def test_a_hint_is_held_back_only_from_a_webhook_that_opted_out(monkeypatch):
+    from app import notify
+    from app.config import Notifications
+
+    sent: list = []
+
+    async def record(hook, subject, body, severity, payload):
+        sent.append((hook.id, subject))
+        return "HTTP 200"
+
+    monkeypatch.setattr(notify, "send_webhook", record)
+    cfg = Notifications(webhooks=[_hook(id="all"), _hook(id="quiet", config_hints=False)])
+
+    await notify.notify(cfg, "hint", "b", {}, "warning", hint=True)
+    await notify.notify(cfg, "event", "b", {}, "warning")
+
+    assert sorted(sent) == [("all", "event"), ("all", "hint"), ("quiet", "event")]
+
+
+def test_config_hints_default_to_on_for_an_existing_webhook():
+    from app.config import WebhookConfig
+
+    assert WebhookConfig.model_validate({"url": "https://hook/x"}).config_hints is True
+
+
+def _hint_engine(monkeypatch, srv):
+    """_split_feed_engine with one webhook that takes hints and one that does not."""
+    from app import db, notify
+    from app.config import Notifications
+
+    eng = _split_feed_engine(monkeypatch, srv)
+    eng.cfg.notifications = Notifications(
+        webhooks=[_hook(id="all"), _hook(id="quiet", config_hints=False)]
+    )
+    sent: list = []
+    logged: list = []
+
+    async def record(hook, subject, body, severity, payload):
+        sent.append((hook.id, subject, severity))
+        return "HTTP 200"
+
+    monkeypatch.setattr(notify, "send_webhook", record)
+    monkeypatch.setattr(db, "log_event", lambda s, b, sev: logged.append(s))
+    return eng, sent, logged
+
+
+@pytest.mark.asyncio
+async def test_the_feed_finding_from_50_is_a_hint(monkeypatch):
+    eng, sent, logged = _hint_engine(monkeypatch, _srv4())
+
+    await eng._check_clusters()
+
+    feed = [h for h, s, _ in sent if "different UPS devices" in s]
+    assert feed == ["all"], "muted for the webhook that opted out"
+    assert any("different UPS devices" in s for s in logged), "still in the event log"
+
+
+@pytest.mark.asyncio
+async def test_a_fault_is_sent_to_a_webhook_that_mutes_hints(monkeypatch):
+    eng, sent, _ = _hint_engine(monkeypatch, _srv4())
+
+    await eng._emit("Cluster prod: token privileges incomplete", "b", "warning")
+
+    assert sorted(h for h, _, _ in sent) == ["all", "quiet"]
+
+
+@pytest.mark.asyncio
+async def test_a_critical_hint_is_never_muted(monkeypatch):
+    eng, sent, _ = _hint_engine(monkeypatch, _srv4())
+
+    await eng._hint("Something critical", "b", "critical")
+    await eng._hint("Something advisory", "b", "warning")
+
+    assert sorted(h for h, s, _ in sent if s.endswith("critical")) == ["all", "quiet"]
+    assert [h for h, s, _ in sent if s.endswith("advisory")] == ["all"]
+
+
+def test_webhookfromcard_sends_the_hint_switch():
+    import re
+    from pathlib import Path
+
+    app_js = (Path(__file__).resolve().parents[1] / "app" / "web" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    body = re.search(r"function webhookFromCard\(div\)\s*\{(.*?)\n\}", app_js, re.DOTALL)
+    assert body and "config_hints" in body.group(1)
+
+
+# --- #47: power in watts ----------------------------------------------------------
+def test_nut_reads_measured_power_and_the_rating():
+    from app import nut
+
+    st = UpsState()
+    nut._apply_variables(st, {"ups.status": "OL", "ups.load": "40", "ups.realpower": "310.4",
+                              "ups.realpower.nominal": "810"})
+
+    assert (st.power_w, st.power_nominal_w, st.power_estimated) == (310, 810, False)
+
+
+def test_power_is_estimated_from_load_and_the_reported_rating():
+    from app import nut, sources
+    from app.config import NutConfig
+
+    st = UpsState()
+    nut._apply_variables(st, {"ups.status": "OL", "ups.load": "37",
+                              "ups.realpower.nominal": "810"})
+    sources.estimate_power(NutConfig(host="h", ups_name="u"), st)
+
+    assert (st.power_w, st.power_estimated) == (300, True)
+
+
+def test_the_configured_rating_wins_over_the_device_but_not_over_a_measurement():
+    from app import sources
+
+    cfg = SnmpConfig(host="h", nominal_power_w=1000)
+    est = UpsState(load_pct=25, power_nominal_w=810)
+    sources.estimate_power(cfg, est)
+    measured = UpsState(load_pct=25, power_w=190)
+    sources.estimate_power(cfg, measured)
+
+    assert (est.power_w, est.power_estimated) == (250, True)
+    assert (measured.power_w, measured.power_estimated) == (190, False)
+
+
+def test_no_power_without_a_load_or_a_rating():
+    from app import sources
+
+    no_load = UpsState(power_nominal_w=810)
+    sources.estimate_power(SnmpConfig(host="h", nominal_power_w=1000), no_load)
+    no_rating = UpsState(load_pct=30)
+    sources.estimate_power(SnmpConfig(host="h"), no_rating)
+
+    assert no_load.power_w is None and no_rating.power_w is None
+
+
+@pytest.mark.parametrize("value, expected", [
+    (None, None), ("", None), (0, None), (-5, None), ("abc", None), ("810", 810),
+    (10**7, 100_000),
+])
+def test_the_rated_power_is_normalised_not_refused(value, expected):
+    assert SnmpConfig(host="h", nominal_power_w=value).nominal_power_w == expected
+
+
+def test_the_snapshot_carries_the_power():
+    from app.engine import Engine
+
+    eng = Engine(AppConfig(ups=[SnmpConfig(id="u", host="10.0.0.9")]))
+    eng.ups_rt["u"].state = UpsState(reachable=True, power_source="mains", load_pct=40,
+                                     power_w=324, power_estimated=True)
+
+    u = eng.snapshot()["ups"][0]
+
+    assert (u["power_w"], u["power_estimated"]) == (324, True)
+
+
+def test_upsfromcard_sends_the_rated_power():
+    import re
+    from pathlib import Path
+
+    app_js = (Path(__file__).resolve().parents[1] / "app" / "web" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    body = re.search(r"function upsFromCard\(div\)\s*\{(.*?)\n\}", app_js, re.DOTALL)
+    assert body and "nominal_power_w" in body.group(1)

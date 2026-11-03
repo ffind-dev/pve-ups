@@ -1,10 +1,11 @@
-// History tab (#37): runtime, load and charge of every UPS over time, as inline SVG.
+// History tab (#37): runtime, load, charge and power of every UPS over time, as inline SVG.
 // Vanilla JS without a chart library, like the rest of the UI (offline, no build step).
 // Loaded after app.js and uses its helpers: $, t, esc, api, show.
 //
-// Two views. One UPS: two panels on a shared time axis — runtime in minutes on top,
-// load and charge in percent below (two panels rather than one chart with two y-axes,
-// which would invite reading minutes against percent). "All": one measure at a time, one
+// Two views. One UPS: panels on a shared time axis — runtime in minutes on top, load and
+// charge in percent below, and power in watts underneath where the UPS has any (#47)
+// (one panel per unit rather than one chart with several y-axes, which would invite
+// reading minutes against percent). "All": one measure at a time, one
 // line per UPS, and a status strip per UPS underneath instead of overlapping backgrounds.
 // Copyright 2026 Florian Finder
 
@@ -17,7 +18,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 
 const hist = {
   // Per-viewer conveniences only (see histLoadPrefs); the data always comes from the API.
-  prefs: { range: "24h", ups: null, metric: "runtime", runtime: true, load: true, charge: true, info: false },
+  prefs: { range: "24h", ups: null, metric: "runtime", runtime: true, load: true, charge: true, power: true, info: false },
   zoom: null,       // {from, to} while zoomed in, else null
   data: null,       // last /api/history answer
   timer: null,
@@ -206,19 +207,23 @@ function renderHistToolbar(d, sel) {
 
   const box = $("h_series");
   box.replaceChildren();
+  // Power only where a UPS in view has any (#47): most devices report none, and a choice
+  // that always draws an empty panel is one more thing to wonder about.
+  const metrics = ["runtime", "load", "charge"];
+  if (histHasPower(d, sel)) metrics.push("power");
   if (sel === "all") {
     // One measure at a time across all UPS devices: lines with different units in one
     // chart would only invite comparing them.
     const seg = document.createElement("div");
     seg.className = "hseg";
-    for (const m of ["runtime", "load", "charge"]) {
+    for (const m of metrics) {
       seg.appendChild(segButton(t("hist.m." + m), hist.prefs.metric === m, () => {
         hist.prefs.metric = m; histSavePrefs(); histRender();
       }));
     }
     box.appendChild(seg);
   } else {
-    for (const m of ["runtime", "load", "charge"]) {
+    for (const m of metrics) {
       const lbl = document.createElement("label");
       const cb = document.createElement("input");
       cb.type = "checkbox";
@@ -229,6 +234,12 @@ function renderHistToolbar(d, sel) {
       box.appendChild(lbl);
     }
   }
+}
+
+// Whether any UPS in view has a power value in the range (points carry it at index 4).
+function histHasPower(d, sel) {
+  const shown = sel === "all" ? d.ups : d.ups.filter((u) => u.id === sel);
+  return shown.some((u) => u.points.some((p) => p[4] != null));
 }
 
 // --- rendering --------------------------------------------------------------------------
@@ -270,14 +281,16 @@ function histRender() {
 
   // Panels to draw: [{title, unit, max, series:[{u, idx, label, color, dashed}], bands}]
   const panels = [];
+  const hasPower = histHasPower(d, sel);
   if (all) {
-    const m = hist.prefs.metric;
-    const idx = { runtime: 1, charge: 2, load: 3 }[m];
-    let max = m === "runtime" ? 0 : 100;
-    if (m === "runtime") {
+    // A stored choice of "power" falls back to runtime once no UPS in view has watts.
+    const m = hist.prefs.metric === "power" && !hasPower ? "runtime" : hist.prefs.metric;
+    const idx = { runtime: 1, charge: 2, load: 3, power: 4 }[m];
+    let max = m === "runtime" || m === "power" ? 0 : 100;
+    if (m === "runtime" || m === "power") {
       for (const u of shown) {
-        for (const p of u.points) if (p[1] != null) max = Math.max(max, p[1]);
-        if (u.threshold_runtime_min) max = Math.max(max, u.threshold_runtime_min);
+        for (const p of u.points) if (p[idx] != null) max = Math.max(max, p[idx]);
+        if (m === "runtime" && u.threshold_runtime_min) max = Math.max(max, u.threshold_runtime_min);
       }
       max = niceMax(max * 1.1);
     }
@@ -302,6 +315,14 @@ function histRender() {
     if (hist.prefs.load) pct.push({ u, idx: 3, label: t("hist.m.load"), color: seriesVar(0) });
     if (hist.prefs.charge) pct.push({ u, idx: 2, label: t("hist.m.charge"), color: seriesVar(1), dashed: true });
     if (pct.length) panels.push({ title: t("hist.p.percent"), max: 100, h: narrow ? 120 : 150, bands: u, thresholds: [], series: pct });
+    if (hasPower && hist.prefs.power) {
+      let max = 0;
+      for (const p of u.points) if (p[4] != null) max = Math.max(max, p[4]);
+      panels.push({
+        title: t("hist.p.power"), max: niceMax(max * 1.1), h: narrow ? 120 : 150, bands: u,
+        thresholds: [], series: [{ u, idx: 4, label: t("hist.m.power"), color: seriesVar(2), direct: false }],
+      });
+    }
   }
 
   const TOP = 6, GAP = 26, AXIS = 22;
@@ -462,6 +483,7 @@ function renderHistLegend(d, sel, shown, colorOf, hasMarks) {
     if (hist.prefs.runtime) item("ln", t("hist.m.runtime"), seriesVar(0));
     if (hist.prefs.load) item("ln", t("hist.m.load"), seriesVar(0));
     if (hist.prefs.charge) item("ln dashed", t("hist.m.charge"), seriesVar(1));
+    if (hist.prefs.power && histHasPower(d, sel)) item("ln", t("hist.m.power"), seriesVar(2));
   }
   // Only the states that actually occur in view: a legend of things that are not there
   // is one more thing to read.
@@ -525,7 +547,7 @@ function histShowAt(px) {
       const i = nearestIdx(s.u.points, ts);
       const pt = i >= 0 ? s.u.points[i] : null;
       const v = pt && Math.abs(pt[0] - ts) <= gapLimit ? pt[s.idx] : null;
-      const unit = s.idx === 1 ? " min" : " %";
+      const unit = s.idx === 1 ? " min" : s.idx === 4 ? " W" : " %";
       row(v == null ? "–" : v + unit, s.label, s.color, s.dashed);
       if (v != null) {
         const dot = svgEl("circle", { cx: g.X(pt[0]), cy: p.Y(v), r: 4, class: "hdot" }, g.dots);
@@ -689,7 +711,7 @@ function renderOutages(d) {
       fmtDur(e.duration_s) + (e.ongoing ? " · " + t("hist.ongoing") : ""),
       e.min_runtime == null ? "–" : e.min_runtime + " min",
       pct(e.min_charge),
-      pct(e.max_load),
+      pct(e.max_load) + (e.max_power == null ? "" : " · " + e.max_power + " W"),
       e.triggered ? t("hist.yes") : t("hist.no"),
     ];
     cells.forEach((c, i) => {

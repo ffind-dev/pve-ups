@@ -309,7 +309,7 @@ unterscheiden sich von Proxmox VE und erklären die Befehle oben:
   passend zur Browsersprache; eingebautes Benutzerhandbuch (Englisch und Deutsch — die
   italienische Oberfläche verweist auf das englische).
 - **Schwellen-Overrides je USV** zusätzlich zu den globalen Standardwerten.
-- **Reiter „Verlauf“**: Restlaufzeit, Last und Ladung jeder USV im Zeitverlauf (1 Stunde
+- **Reiter „Verlauf“**: Restlaufzeit, Last, Ladung und Leistung jeder USV im Zeitverlauf (1 Stunde
   bis 90 Tage oder frei gewählter Beginn und frei gewähltes Ende), mit Ausfällen, Auslösern und Nicht-Erreichbarkeit als farbigen Bändern,
   Markierungen aus dem Ereignisprotokoll, Zoom per Ziehen, Ausfall-Tabelle und CSV-Export.
   Wird eine einstellbare Anzahl Tage in einer eigenen kleinen Datenbank aufbewahrt und im
@@ -341,10 +341,17 @@ unterscheiden sich von Proxmox VE und erklären die Befehle oben:
   Gast darf nicht auf Ceph-Storage liegen — der Installer lehnt das ab. „Als Einheit" hier
   an lassen: Ein halb heruntergefahrener hyperkonvergenter Cluster verliert sein
   Monitor-Quorum und hat dann auch keinen funktionierenden Storage mehr.
+- **Cluster über zwei Räume** (**Beta**): Jedem Knoten seinen Raum als **Standort** geben.
+  Verliert ein Raum den Strom, gehen nur seine Knoten herunter und HA übernimmt im anderen
+  Raum; erst wenn kein vollständiger Raum mehr bleibt, wird der Cluster vorbereitet und
+  komplett heruntergefahren. Braucht eine Quorum-Stimme an einem dritten Standort und
+  PVE-UPS außerhalb des Clusters (dafür passt das Docker-Image) — siehe Handbuch, Abschnitt
+  „Cluster über zwei Räume".
 - **Webhook-Benachrichtigungen** bei wichtigen Ereignissen — beliebig viele Ziele, jedes
   mit eigenem Format (vollständiges Status-JSON, **Microsoft Teams**, **Slack**,
   **Discord**, **ntfy**, Klartext oder eine **eigene Vorlage** mit Platzhalter-Ersetzung),
-  Stufenfilter, optionalem Authentifizierungs-Header samt beliebigen weiteren Headern, die
+  Stufenfilter, einem Schalter zum Stummschalten von Konfigurationshinweisen aus dem
+  Selbsttest, optionalem Authentifizierungs-Header samt beliebigen weiteren Headern, die
   das Ziel braucht (etwa für Nextcloud Talk), und Testversand. Der Versand läuft
   parallel und unter einer gemeinsamen Obergrenze; ein nicht erreichbares Ziel kostet den
   anderen also weder ihre Meldung noch dem Shutdown Akkulaufzeit. Ein Ziel, das nicht mehr
@@ -465,9 +472,11 @@ PVE_USV_CONFIG=./dev-config.yaml PVE_USV_DB=./dev-events.db python -m app.main
   gehen sollte, wird gemeldet, nicht umsortiert —, und die Gäste werden parallel gestoppt,
   nicht in ihrer `startup`-Reihenfolge. Die Vorbereitung beginnt, sobald der *erste* Knoten
   eines Clusters fällig ist — genau dafür gibt es „Gesamten Cluster als Einheit
-  herunterfahren": Es hält Shutdown und Vorbereitung bei derselben Menge Maschinen. Diese
-  Vorbereitung ist in 4.0.0 **Beta**: Der Mechanismus überprüft jeden Schritt und wählt im
-  Zweifel die sichere Variante, hat bisher aber wenige echte Cluster gesehen.
+  herunterfahren": Es hält Shutdown und Vorbereitung bei derselben Menge Maschinen — außer
+  die Knoten tragen **Standorte** (4.4.0): Dann wird ein einzelner Raum ohne sie
+  heruntergefahren, und die Vorbereitung wartet auf den letzten Raum. Diese Vorbereitung ist
+  in 4.0.0 **Beta**: Der Mechanismus überprüft jeden Schritt und wählt im Zweifel die
+  sichere Variante, hat bisher aber wenige echte Cluster gesehen.
 - Shutdown-Ziele sind **Proxmox VE und Proxmox Backup Server**. Proxmox Mail Gateway und
   Datacenter Manager sind nicht umgesetzt: beide sprechen ihr eigenes Token-Schema, und
   ungetesteter Support wäre schlechter als keiner.

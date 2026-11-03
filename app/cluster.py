@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import httpx
@@ -169,6 +169,9 @@ class ClusterInfo:
     quorate: bool = True
     nodes: list[str] = field(default_factory=list)
     nodes_online: int = 0
+    # The names behind that count. Site failover asks "is every node of site B up", and a
+    # count cannot answer which ones.
+    online_nodes: list[str] = field(default_factory=list)
     # The node that answered THIS api_url, as it names itself. The only node name here
     # that is not a guess, which is what makes it safe to offer as a suggestion.
     local_node: str = ""
@@ -425,6 +428,7 @@ async def _read_cluster_status(client: httpx.AsyncClient, info: ClusterInfo) -> 
                 info.local_node = node
             if entry.get("online"):
                 info.nodes_online += 1
+                info.online_nodes.append(node)
     if info.is_cluster:
         _record(
             info,
@@ -490,6 +494,26 @@ async def _read_ceph(client: httpx.AsyncClient, info: ClusterInfo) -> None:
     )
 
 
+def _parse_guests(data: list) -> list[GuestInfo]:
+    """The VM/CT entries of a /cluster/resources answer. Pure; malformed rows are skipped."""
+    out: list[GuestInfo] = []
+    for entry in data:
+        if not isinstance(entry, dict) or not entry.get("vmid"):
+            continue
+        out.append(
+            GuestInfo(
+                vmid=int(entry["vmid"]),
+                node=str(entry.get("node") or ""),
+                kind=str(entry.get("type") or ""),
+                name=str(entry.get("name") or ""),
+                status=str(entry.get("status") or ""),
+                template=bool(entry.get("template")),
+                hastate=str(entry.get("hastate") or ""),
+            )
+        )
+    return out
+
+
 async def _read_guests(client: httpx.AsyncClient, info: ClusterInfo) -> None:
     """Every VM and container of the cluster, in one call.
 
@@ -506,20 +530,7 @@ async def _read_guests(client: httpx.AsyncClient, info: ClusterInfo) -> None:
         info.errors.append(info.guests_error)
         _record(info, path, err=info.guests_error, feature=FEATURE_GUESTS)
         return
-    for entry in data:
-        if not isinstance(entry, dict) or not entry.get("vmid"):
-            continue
-        info.guests.append(
-            GuestInfo(
-                vmid=int(entry["vmid"]),
-                node=str(entry.get("node") or ""),
-                kind=str(entry.get("type") or ""),
-                name=str(entry.get("name") or ""),
-                status=str(entry.get("status") or ""),
-                template=bool(entry.get("template")),
-                hastate=str(entry.get("hastate") or ""),
-            )
-        )
+    info.guests.extend(_parse_guests(data))
     if not info.guests and not info.can_vm_audit:
         # Worded as a refusal so it is classified "denied" like a 403 — which is what it
         # is, only delivered as a filtered 200.
@@ -741,6 +752,38 @@ async def inspect(
         )
 
 
+# Budget for the one status read site failover makes before deciding. Read on the shutdown
+# path, so it is short and counted by engine.shutdown_budget_s() like the inspection.
+ONLINE_READ_BUDGET_S = 5.0
+
+
+async def online_nodes(
+    host: PveHostConfig, timeout: float = ONLINE_READ_BUDGET_S
+) -> Optional[list[str]]:
+    """The cluster's online nodes as ``host`` sees them, or None when that is not known.
+
+    One call (/cluster/status) instead of a full inspection: site failover needs exactly
+    this answer, on the shutdown path, from a node that is NOT going down. None covers
+    every way of not knowing — unreachable, not a cluster, and a node without quorum,
+    whose view of who is online is no basis for leaving anything running. Total, like
+    everything here.
+    """
+
+    async def _read() -> Optional[list[str]]:
+        info = ClusterInfo()
+        async with _client(host, timeout) as client:
+            await _read_cluster_status(client, info)
+        if not info.is_cluster or not info.quorate:
+            return None
+        return list(info.online_nodes)
+
+    try:
+        return await asyncio.wait_for(_read(), timeout=timeout + DEADLINE_GRACE_S)
+    except Exception as exc:  # noqa: BLE001 - "unknown" is an answer, never an exception
+        log.debug("Online-node read via %s failed: %s", host.name, exc)
+        return None
+
+
 # --- writing operations ------------------------------------------------------
 # How long to keep re-reading a state until it matches, and how often. Both write paths
 # verify by GET rather than trusting the response: the bulk PUT on /cluster/ceph/flags is
@@ -951,8 +994,13 @@ async def _verify(matches, read, budget_s: float, interval_s: Optional[float] = 
 
 async def _read_running_vmids(
     client: httpx.AsyncClient, timeout: float = CONNECT_TIMEOUT_S
-) -> Optional[set[int]]:
-    """VMIDs currently reported as running, or None when the list could not be read.
+) -> Optional[dict[int, str]]:
+    """VMIDs currently reported as running, mapped to the node each one is on — or None
+    when the list could not be read.
+
+    The node is part of the answer because a guest can move while it is being stopped: a
+    live migration that was already running when the HA manager was disarmed still
+    completes, and every later request for that guest has to go to where it is now.
 
     None rather than an empty set, and the distinction decides whether a shutdown is
     called successful: ``down()`` in _shutdown_guests concludes "every guest has stopped"
@@ -974,7 +1022,7 @@ async def _read_running_vmids(
     if not isinstance(data, list):
         return None
     return {
-        int(e["vmid"])
+        int(e["vmid"]): str(e.get("node") or "")
         for e in data
         if isinstance(e, dict) and e.get("vmid") and e.get("status") == "running"
     }
@@ -1001,14 +1049,25 @@ async def _shutdown_guests(
     ``forceStop``, so the kill still happens if we lose the network right after asking —
     and it is ALSO enforced from here, because that delegated kill is invisible to us.
     None disables both: a guest that ignores the request then fails the step by name.
+
+    Guests are followed by VMID, not by the path they were listed under. A guest that is
+    in the middle of a live migration refuses the request ("locked"), and once the
+    migration completes it lives on another node — so a refused request is asked again
+    on every re-read of the graceful wait, at the node the re-read names. Before this a
+    refusal simply sat out the grace period and then went to the force-stop, which used
+    the old path as well and failed the same way.
     """
     if not targets:
         return True, []
 
     sem = asyncio.Semaphore(_GUEST_CONCURRENCY)
     rejected: list[str] = []
+    # Where each guest is now, kept current by every re-read (see _follow).
+    by_id = {g.vmid: g for g in targets}
+    # Whose latest graceful request was refused; those are asked again (see reread).
+    refused: set[int] = set()
 
-    async def ask(guest: GuestInfo) -> None:
+    async def ask(guest: GuestInfo, retry: bool = False) -> None:
         data: dict[str, object] = {}
         if force_after_s is not None:
             data = {"timeout": int(force_after_s), "forceStop": 1}
@@ -1020,7 +1079,13 @@ async def _shutdown_guests(
                 return
             err = await _post(client, f"{guest.path}/status/shutdown", data=data)
         if err:
-            rejected.append(f"{guest.label}: {err}")
+            refused.add(guest.vmid)
+            if not retry:
+                rejected.append(f"{guest.label}: {err}")
+        else:
+            refused.discard(guest.vmid)
+            if retry:
+                steps.append(f"{guest.label}: shutdown accepted on a later attempt")
 
     # Bounded as a round, not only per request. Each _post is limited by the client's
     # timeout alone, so a control plane that accepts connections and then goes quiet cost
@@ -1046,11 +1111,40 @@ async def _shutdown_guests(
         steps.append(f"and {len(rejected) - 5} more rejections")
 
     wanted = {g.vmid for g in targets}
-    by_id = {g.vmid: g for g in targets}
 
-    def down(running: Optional[set[int]]) -> bool:
+    def down(running: Optional[dict[int, str]]) -> bool:
         # An unreadable list is not a stopped cluster. See _read_running_vmids.
-        return running is not None and not (wanted & running)
+        return running is not None and not (wanted & running.keys())
+
+    def _follow(running: dict[int, str]) -> None:
+        """Move each target to the node the latest read puts it on."""
+        for vmid in wanted & running.keys():
+            node = running[vmid]
+            guest = by_id[vmid]
+            if node and node != guest.node:
+                by_id[vmid] = replace(guest, node=node)
+                steps.append(f"{guest.label} is now on {node}")
+
+    async def reread() -> Optional[dict[int, str]]:
+        """One re-read of the graceful wait: follow moved guests, ask refused ones again.
+
+        Bounded by the same deadline as everything else here, and only ever asks guests
+        whose last request was refused and that are still running — a guest that
+        accepted is never asked twice.
+        """
+        running = await _read_running_vmids(client, _remaining(deadline))
+        if running is not None:
+            _follow(running)
+            again = [by_id[v] for v in sorted(refused & running.keys())]
+            if again:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*(ask(g, retry=True) for g in again)),
+                        timeout=max(0.5, _remaining(deadline) - _MARGIN_S),
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    pass
+        return running
 
     async def still_running() -> list[GuestInfo]:
         """The targets we cannot see stopped, bounded by what is left of the deadline.
@@ -1067,8 +1161,9 @@ async def _shutdown_guests(
                 "the guest list could not be re-read, so it is unknown which guests are "
                 "still running - treating all of them as running"
             )
-            return list(targets)
-        return [by_id[v] for v in sorted(wanted & running)]
+            return [by_id[g.vmid] for g in targets]
+        _follow(running)
+        return [by_id[v] for v in sorted(wanted & running.keys())]
 
     # Wait at most what the setting promises, and never more than the share of the budget
     # that still leaves room to kill the stragglers. Waiting the full share regardless
@@ -1077,10 +1172,7 @@ async def _shutdown_guests(
     grace = max(0.0, (_remaining(deadline) - _MARGIN_S) * _GUEST_GRACE_SHARE)
     if force_after_s is not None:
         grace = min(grace, float(force_after_s))
-    if await _verify(
-        down, lambda: _read_running_vmids(client, _remaining(deadline)),
-        grace, _GUEST_POLL_INTERVAL_S,
-    ):
+    if await _verify(down, reread, grace, _GUEST_POLL_INTERVAL_S):
         steps.append(f"all {len(targets)} guests stopped")
         return True, []
 
@@ -1123,6 +1215,54 @@ async def _shutdown_guests(
     survivors = await still_running()
     steps.append(f"guests still running after force-stop: {_name_list(survivors)}")
     return False, survivors
+
+
+# Ceiling for re-reading the guest list between the HA disarm and the guest stop. One
+# request; anything slower falls back to the list that was handed in.
+_GUEST_REREAD_BUDGET_S = 5.0
+
+
+async def _current_guests(
+    client: httpx.AsyncClient, known: list[GuestInfo], timeout: float
+) -> tuple[list[GuestInfo], Optional[str]]:
+    """The guest list as the cluster reports it now, laid over ``known``.
+
+    ``known`` comes from the last inspection, which is usually the scheduled self-test —
+    hours old by the time an outage arrives. Its node paths are wrong for every guest that
+    has migrated since, and the guests started since are not in it at all; both then
+    escaped the cluster-wide stop and kept writing to Ceph.
+
+    Read once, right after the disarm, because from then on the HA manager moves and
+    restarts nothing. Merged rather than replaced, so this can never stop FEWER guests than
+    the list it was given: a fresh entry wins by VMID, and a known guest the answer does not
+    mention (/cluster/resources filters by privilege rather than refusing) is kept as it
+    was. Returns the list and a line for the step log, or None when nothing worth saying
+    happened.
+    """
+    try:
+        data, err = await asyncio.wait_for(
+            _get(client, "/cluster/resources?type=vm"), timeout=max(0.5, timeout)
+        )
+    except Exception as exc:  # noqa: BLE001 - fall back, never fail the step over a read
+        data, err = None, str(exc) or type(exc).__name__
+    if err or not isinstance(data, list):
+        return known, (
+            "the guest list could not be re-read after the HA disarm - using the one "
+            "from the last inspection"
+        )
+    fresh = {g.vmid: g for g in _parse_guests(data)}
+    old = {g.vmid: g for g in known}
+    moved = sum(1 for v, g in fresh.items() if v in old and old[v].node != g.node)
+    new = sum(
+        1 for v, g in fresh.items() if v not in old and g.status == "running"
+    )
+    merged = list(fresh.values()) + [g for v, g in old.items() if v not in fresh]
+    if not moved and not new:
+        return merged, None
+    return merged, (
+        f"guest list re-read after the HA disarm: {moved} moved, {new} started since "
+        f"the last inspection"
+    )
 
 
 def stop_targets(
@@ -1240,6 +1380,13 @@ async def _prepare(
                     "so the HA manager would restart the guests as fast as they stop"
                 )
             else:
+                guests, note = await _current_guests(
+                    client, guests,
+                    min(_GUEST_REREAD_BUDGET_S,
+                        _remaining(overall_deadline) * _CEPH_SHARE),
+                )
+                if note:
+                    steps.append(note)
                 targets = stop_targets(guests, self_guest, hostname)
                 if not targets:
                     steps.append("no guests to stop")

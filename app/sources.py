@@ -61,7 +61,7 @@ async def poll(cfg: UpsBase) -> UpsState:
     then goes quiet used to freeze the whole decision engine, for every other UPS too.
     """
     try:
-        return await asyncio.wait_for(
+        state = await asyncio.wait_for(
             _poll(cfg), timeout=poll_budget_s(cfg) + POLL_GRACE_S
         )
     except (asyncio.TimeoutError, TimeoutError):
@@ -70,6 +70,28 @@ async def poll(cfg: UpsBase) -> UpsState:
     except Exception as exc:  # noqa: BLE001 - the poll loop must never see an exception
         log.warning("Poll of %s failed: %s", getattr(cfg, "label", "?"), exc)
         return UpsState(error=str(exc))
+    estimate_power(cfg, state)
+    return state
+
+
+def estimate_power(cfg: UpsBase, state: UpsState) -> None:
+    """Fill in the watts from load x rated power where the device reports none (#47).
+
+    In one place for every source rather than per module, so SNMP gets the estimate from
+    the configured rating exactly as NUT does. Order: what the device measured, then the
+    rating the operator entered, then the rating the device reports. Never raises — it
+    sits on the poll path, whose contract is that nothing escapes.
+    """
+    try:
+        if state.power_w is not None or state.load_pct is None:
+            return
+        rated = getattr(cfg, "nominal_power_w", None) or state.power_nominal_w
+        if not rated:
+            return
+        state.power_w = int(round(state.load_pct * rated / 100))
+        state.power_estimated = True
+    except Exception as exc:  # noqa: BLE001 - informational only, never worth a failed poll
+        log.debug("Power estimate for %s failed: %s", getattr(cfg, "label", "?"), exc)
 
 
 async def _poll(cfg: UpsBase) -> UpsState:

@@ -101,6 +101,10 @@ def _repair(model, field: str, lo=None, hi=None) -> None:
     model._corrections.append(f"{field}={value!r} is out of range, using {default!r}")
 
 
+# Highest rated power kept (UpsBase.nominal_power_w): a large three-phase unit, with room.
+NOMINAL_POWER_MAX_W = 100_000
+
+
 class UpsThresholdOverride(BaseModel):
     """Optional per-UPS override of the global trigger thresholds.
 
@@ -148,6 +152,24 @@ class UpsBase(BaseModel):
 
     # Optional per-UPS threshold override (None fields inherit the global thresholds).
     overrides: UpsThresholdOverride = UpsThresholdOverride()
+
+    # Rated real power in watts, for a device that reports its load in percent but no
+    # watts (#47). Informational only: the power shown is load x this, and no trigger
+    # reads it. Takes precedence over a rating the device reports itself, since the
+    # operator only fills it in when that one is missing or wrong.
+    nominal_power_w: Optional[int] = None
+
+    @field_validator("nominal_power_w", mode="before")
+    @classmethod
+    def _normalise_nominal_power(cls, value):
+        """Empty, zero or not a number means "not set"; capped, never a reject."""
+        try:
+            watts = int(float(value))
+        except (TypeError, ValueError):
+            return None
+        if watts <= 0:
+            return None
+        return min(watts, NOMINAL_POWER_MAX_W)
 
     @property
     def configured(self) -> bool:
@@ -263,6 +285,10 @@ UPS_SOURCE_MODELS: dict[str, type[UpsBase]] = {
     "snmp": SnmpConfig,
     "nut": NutConfig,
 }
+
+
+# Longest site label kept (PveHostConfig.cluster_site). A room name, not a description.
+SITE_LABEL_MAX = 32
 
 
 class ShutdownMethod(str, Enum):
@@ -393,6 +419,23 @@ class PveHostConfig(HostConfig):
     # runtime feature detection, so an upgrade to 9.2 activates it without the user
     # having to notice and re-tick anything.
     cluster_ha_disarm: bool = True
+    # Site failover (Beta, 4.4.0): the self-sufficient part of a stretched cluster this
+    # node belongs to — typically a room with its own UPS. A free label. Empty means "no
+    # site": a witness or quorum-only node, which never counts as able to carry the
+    # cluster on its own. Once the members of one cluster name two or more sites, a site
+    # whose UPS fails while another one stays complete shuts down only its own nodes and
+    # leaves the guests to HA; only when no complete site would remain is the cluster
+    # prepared and shut down as a whole (see Engine._failover_decision). Not a switch of
+    # its own on purpose: there is nothing that could disagree with the labels.
+    cluster_site: str = ""
+
+    @field_validator("cluster_site", mode="before")
+    @classmethod
+    def _normalise_site(cls, value):
+        """Trimmed and capped; anything that is not text means "no site", never a reject."""
+        if not isinstance(value, str):
+            return ""
+        return value.strip()[:SITE_LABEL_MAX]
 
 
 class PbsHostConfig(HostConfig):
@@ -642,6 +685,11 @@ class WebhookConfig(BaseModel):
     # POSTs a rendered notification on each notable event that passes ``min_severity``.
     format: WebhookFormat = WebhookFormat.json
     min_severity: WebhookLevel = WebhookLevel.warning
+    # Configuration hints from the self-test (#50): findings about a setup that works as
+    # configured, where the appliance only spells out a consequence or recommends
+    # something (see Engine._emit). Off keeps them in the event log but out of this
+    # target. A CRITICAL finding is never a hint, so it cannot be muted here.
+    config_hints: bool = True
 
     # ``custom`` format only: the body to send, with {{placeholder}} substitution (see
     # app/notify.py: _render_custom). Deliberately NOT an expression language — plain
@@ -1030,6 +1078,46 @@ class AppConfig(BaseModel):
         """Enabled hosts in shutdown order; the appliance's own host always last."""
         active = [h for h in self.hosts if h.enabled]
         return sorted(active, key=lambda h: (h.this_host, h.order, h.name))
+
+    def cluster_sites(self) -> dict[str, list["PveHostConfig"]]:
+        """Site label -> the enabled cluster members carrying it, in config order.
+
+        From the configuration alone. Which nodes form one cluster is only known at
+        runtime, so the engine narrows this to one cluster's members; this is the view the
+        save path and the UI can have, and on the usual one-cluster appliance the two agree.
+        """
+        out: dict[str, list[PveHostConfig]] = {}
+        for h in self.hosts:
+            if isinstance(h, PveHostConfig) and h.enabled and h.cluster and h.cluster_site:
+                out.setdefault(h.cluster_site, []).append(h)
+        return out
+
+    def site_failover_conflicts(self) -> list[str]:
+        """Why site failover may not be used with this config, one line per reason.
+
+        Pure, and the single source for the save path (which refuses), the engine (which
+        then keeps the failover off) and the self-test (which says so). Empty with fewer
+        than two sites: there is no failover to be in conflict with.
+
+        Both rules come from the same fact: the appliance has to outlive every single
+        site. Running as a guest of the cluster it can die with "its" room, and the other
+        room is then left without anyone to shut it down.
+        """
+        if len(self.cluster_sites()) < 2:
+            return []
+        out = []
+        if not self.appliance.self_external:
+            out.append(
+                "site failover needs this appliance to run outside the cluster - pick "
+                "'not a guest of this cluster' under Triggers -> This appliance"
+            )
+        for h in self.hosts:
+            if isinstance(h, PveHostConfig) and h.enabled and h.this_host and h.cluster_site:
+                out.append(
+                    f"{h.name} is marked as the host carrying this appliance, but site "
+                    f"failover needs the appliance outside the cluster"
+                )
+        return out
 
     def duplicate_api_urls(self) -> list[str]:
         """API URLs shared by more than one enabled target, normalised.

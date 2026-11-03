@@ -293,7 +293,7 @@ from Proxmox VE and explain the commands above:
   the browser language; user manual built in (English and German — the Italian UI links
   to the English one).
 - Per-UPS **threshold overrides** on top of the global defaults.
-- **History tab**: remaining runtime, load and charge of every UPS over time (1 hour to
+- **History tab**: remaining runtime, load, charge and power of every UPS over time (1 hour to
   90 days, or any start and end you pick), with outages, triggers and unreachable stretches as coloured bands, event-log
   markers, drag-to-zoom, an outage table and CSV export. Kept for a configurable number of
   days in its own small database and written in the background, so it never touches the
@@ -321,9 +321,15 @@ from Proxmox VE and explain the commands above:
   the appliance's own guest is picked from a list so it is never stopped, and that guest must
   not live on Ceph storage — the installer refuses that. Leave “as a unit” on here: a half
   shut-down hyper-converged cluster loses its monitor quorum and has no working storage.
+- **Clusters across two rooms** (**Beta**): give each node its room as a **site**. If one
+  room loses power, only its nodes go down and HA takes over in the other room; only when
+  no complete room is left is the cluster prepared and shut down as a whole. Needs a quorum
+  vote at a third location and PVE-UPS running outside the cluster (the Docker image fits
+  there) — see the manual, section “Clusters across two rooms”.
 - **Webhook notifications** on notable events — as many targets as you like, each with its
   own format (full status JSON, **Microsoft Teams**, **Slack**, **Discord**, **ntfy**,
-  plain text, or a **custom template** with placeholder substitution), severity filter,
+  plain text, or a **custom template** with placeholder substitution), severity filter, a
+  switch to mute configuration hints from the self-test,
   optional authentication header plus any extra headers the target needs (Nextcloud Talk
   and the like), and a test-send button. Sends run in parallel and under a
   common ceiling, so one unreachable target costs neither the others their notification
@@ -436,8 +442,10 @@ PVE_USV_CONFIG=./dev-config.yaml PVE_USV_DB=./dev-events.db python -m app.main
   guests are stopped in parallel rather than in their `startup` order. The preparation starts
   as soon as the *first* node of a cluster is due, which is why “shut the whole cluster down
   as a unit” exists: it is what keeps the shutdown and the preparation talking about the same
-  set of machines. That preparation is **Beta** in 4.0.0: the mechanism verifies every step
-  and defaults to the safe choices, but it has seen few real clusters so far.
+  set of machines — unless the nodes carry **sites** (4.4.0), where a single room is shut
+  down without it and the preparation waits for the last room. That preparation is **Beta**
+  in 4.0.0: the mechanism verifies every step and defaults to the safe choices, but it has
+  seen few real clusters so far.
 - Shutdown targets are **Proxmox VE and Proxmox Backup Server**. Proxmox Mail Gateway and
   Datacenter Manager are not implemented: each speaks its own token scheme, and shipping
   untested support would be worse than none.
