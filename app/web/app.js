@@ -573,7 +573,7 @@ const SNMP_MIBS = [["auto", t("mib.auto")], ["rfc1628", t("mib.rfc1628")], ["apc
   ["cyberpower", t("mib.cyberpower")]];
 const DEFAULT_PORTS = { snmp: 161, nut: 3493 };
 // Must match config.HostType; tests/test_i18n.py keeps the labels in both dictionaries.
-const HOST_TYPES = [["pve", t("htype.pve")], ["pbs", t("htype.pbs")]];
+const HOST_TYPES = [["pve", t("htype.pve")], ["pbs", t("htype.pbs")], ["linux", t("htype.linux")]];
 const HOST_DEFAULT_PORTS = { pve: 8006, pbs: 8007 };
 const TRISTATE = [["", t("tristate.global")], ["on", t("tristate.on")], ["off", t("tristate.off")]];
 // Order and values mirror config.WebhookFormat / WebhookLevel (tests/test_i18n.py checks it).
@@ -886,7 +886,7 @@ function formSites() {
   const sites = {};
   const unsited = [];
   document.querySelectorAll("#hostRows .host-cfg").forEach((el) => {
-    if (el.querySelector(".h_type").value === "pbs") return;
+    if (el.querySelector(".h_type").value !== "pve") return;
     if (!el.querySelector(".h_enabled").checked || !el.querySelector(".h_cluster").checked) return;
     const name = el.querySelector(".h_name").value.trim() || t("host.newName");
     const site = el.querySelector(".h_site").value.trim();
@@ -1158,11 +1158,29 @@ function addHostRow(h, isNew, open) {
     <div class="row">
       <label title="${esc(t("host.typeTitle"))}">${esc(t("host.type"))} <select class="h_type">${opts(HOST_TYPES, type)}</select></label>
       <label class="h_namelbl" title=""><span class="h_namecap"></span> <input class="h_name" value="${esc(h.name || "")}" /></label>
-      <label title="${esc(t("host.apiurlTitle"))}">${esc(t("host.apiurl"))} <input class="h_url" value="${esc(h.api_url || "")}" /></label>
+      <label class="h_urllbl" title="${esc(t("host.apiurlTitle"))}">${esc(t("host.apiurl"))} <input class="h_url" value="${esc(h.api_url || "")}" /></label>
     </div>
-    <div class="row">
+    <div class="row h_apirow">
       <label title="${esc(t("host.tokenIdTitle"))}">${esc(t("host.tokenId"))} <input class="h_token_id" value="${esc(h.token_id || "")}" /></label>
       <label title="${esc(t("host.tokenSecretTitle"))}">${esc(t("host.tokenSecret"))} <input class="h_token_secret" type="password" autocomplete="new-password" placeholder="${esc(secretSet ? t("cfg.unchanged") : t("host.tokenSecretPh"))}" /></label>
+    </div>
+    <!-- Linux server (SSH): reached with the appliance's own key, which the setup script
+         installs on the server locked to one forced command (app/remote/). No secret on
+         the card; the host key is pinned by the first successful test. -->
+    <div class="h_sshbox" hidden>
+      <div class="row">
+        <label title="${esc(t("host.sshHostTitle"))}">${esc(t("host.sshHost"))} <input class="h_ssh_host" placeholder="10.0.0.31" value="${esc(h.ssh_host || "")}" /></label>
+        <label title="${esc(t("host.sshPortTitle"))}">${esc(t("host.sshPort"))} <input class="h_ssh_port" type="number" min="1" max="65535" value="${esc(String(h.ssh_port || 22))}" /></label>
+        <label title="${esc(t("host.sshUserTitle"))}">${esc(t("host.sshUser"))} <input class="h_ssh_user" value="${esc(h.ssh_user || "upsshutdown")}" /></label>
+      </div>
+      <div class="row" style="align-items:flex-end">
+        <label title="${esc(t("host.sshHostKeyTitle"))}">${esc(t("host.sshHostKey"))} <input class="h_ssh_host_key" readonly placeholder="${esc(t("host.sshHostKeyPh"))}" value="${esc(h.ssh_host_key || "")}" /></label>
+        <button type="button" class="btn-ghost btn-sm h_ssh_forget" style="flex:0 0 auto">${esc(t("host.sshForget"))}</button>
+      </div>
+      <p class="help">${esc(t("host.sshSetup"))}
+        <a class="h_ssh_dl" href="/api/linux/setup-script" download>${esc(t("host.sshDownload"))}</a> ·
+        <a class="h_ssh_showkey" href="#">${esc(t("host.sshShowKey"))}</a></p>
+      <pre class="h_ssh_pubkey" hidden style="white-space:pre-wrap;word-break:break-all;font-family:monospace;font-size:.85em"></pre>
     </div>
     <p class="warnnote h_dupurl" hidden>${esc(t("host.dupUrl"))}</p>
     <p class="help h_hint"><span class="h_hinttext"></span> <a class="h_hintdoc" data-manual="token-pve" target="_blank" rel="noopener"></a></p>
@@ -1174,7 +1192,7 @@ function addHostRow(h, isNew, open) {
     <div class="row hostflags">
       <label title="${esc(t("host.policyTitle"))}">${esc(t("host.policy"))} <select class="h_policy"><option value="all">${esc(t("hosts.policyAnd"))}</option><option value="any">${esc(t("hosts.policyOr"))}</option></select></label>
       <label class="h_orderlbl" title="${esc(t("host.orderTitle"))}">${esc(t("host.order"))} <input class="h_order" type="number" value="${h.order || 0}" /></label>
-      <label class="chkline" title="${esc(t("host.verifyTitle"))}"><input class="h_verify" type="checkbox" ${h.verify_tls ? "checked" : ""} /> ${esc(t("host.verify"))}</label>
+      <label class="chkline h_verifylbl" title="${esc(t("host.verifyTitle"))}"><input class="h_verify" type="checkbox" ${h.verify_tls ? "checked" : ""} /> ${esc(t("host.verify"))}</label>
       <label class="chkline h_thislbl" title="${esc(t("host.thisTitle"))}"><input class="h_this" type="checkbox" ${h.this_host ? "checked" : ""} /> ${esc(t("host.this"))}</label>
       <span class="help h_thisderived" hidden>${esc(t("host.thisHostDerived"))}</span>
       <label class="chkline" title="${esc(t("host.enabledTitle"))}"><input class="h_enabled" type="checkbox" ${h.enabled !== false ? "checked" : ""} /> ${esc(t("host.enabled"))}</label>
@@ -1258,7 +1276,7 @@ function addHostRow(h, isNew, open) {
     // Cluster membership belongs on the collapsed card for the same reason the ★ does:
     // it changes what happens at shutdown and should not need unfolding to be seen. The
     // discovered name is used when the engine has one, the plain word until then.
-    const inCluster = ty !== "pbs" && el.querySelector(".h_cluster").checked;
+    const inCluster = ty === "pve" && el.querySelector(".h_cluster").checked;
     const cname = inCluster ? (CLUSTER_NAMES[el.querySelector(".h_id").value] || "") : "";
     const site = inCluster ? el.querySelector(".h_site").value.trim() : "";
     el.querySelector(".h_sum_meta").textContent =
@@ -1275,27 +1293,35 @@ function addHostRow(h, isNew, open) {
   const toggleHostType = () => {
     const ty = el.querySelector(".h_type").value;
     const pbs = ty === "pbs";
+    const linux = ty === "linux";
     const lbl = el.querySelector(".h_namelbl");
-    lbl.title = t(pbs ? "host.nameTitle" : "host.nodeTitle");
-    el.querySelector(".h_namecap").textContent = t(pbs ? "host.name" : "host.node");
-    el.querySelector(".h_name").placeholder = pbs ? "Backup-Server" : "pve01";
+    // Only a PVE node name is load-bearing; for the other two it is a free label.
+    lbl.title = t(ty === "pve" ? "host.nodeTitle" : "host.nameTitle");
+    el.querySelector(".h_namecap").textContent = t(ty === "pve" ? "host.node" : "host.name");
+    el.querySelector(".h_name").placeholder = pbs ? "Backup-Server" : (linux ? "gpu01" : "pve01");
+    // API fields vs SSH fields. Hidden, not cleared: switching the type back finds them.
+    el.querySelector(".h_urllbl").hidden = linux;
+    el.querySelector(".h_apirow").hidden = linux;
+    el.querySelector(".h_verifylbl").hidden = linux;
+    el.querySelector(".h_sshbox").hidden = !linux;
     el.querySelector(".h_url").placeholder = pbs ? "https://10.0.0.20:8007" : "https://10.0.0.10:8006";
     el.querySelector(".h_token_id").placeholder = pbs ? "ups@pbs!shutdown" : "ups@pve!shutdown";
     el.querySelector(".h_hinttext").textContent = t("htype." + ty + "Help");
     const doc = el.querySelector(".h_hintdoc");
     doc.textContent = t("host.hintDoc");
-    doc.dataset.manual = pbs ? "token-pbs" : "token-pve";
+    doc.dataset.manual = pbs ? "token-pbs" : (linux ? "linux-ssh" : "token-pve");
     applyTranslations(el);  // rewrites the doc link to the current language's manual
     syncFlags();
   };
   // Which of the flags can apply at all. Order matters here: the "this host" rule may
   // clear the tick, and the order field has to come back in the same pass.
   const syncFlags = () => {
-    const pbs = el.querySelector(".h_type").value === "pbs";
-    // An LXC never runs on a Backup Server, so "this host" cannot apply there. In a
-    // Docker deployment the container may well sit on the PBS — and then the mark
-    // matters, or the appliance kills itself midway through the sequence.
-    const impossible = pbs && deployment !== "docker";
+    const ty = el.querySelector(".h_type").value;
+    const notPve = ty !== "pve";
+    // An LXC never runs on a Backup Server or a plain Linux server, so "this host" cannot
+    // apply there. In a Docker deployment the container may well sit on one — and then
+    // the mark matters, or the appliance kills itself midway through the sequence.
+    const impossible = notPve && deployment !== "docker";
     el.querySelector(".h_thislbl").hidden = impossible;
     // Clear it as well: hostFromRow() still reads the checkbox, and a hidden tick
     // would keep being submitted.
@@ -1304,10 +1330,10 @@ function addHostRow(h, isNew, open) {
     // host is last whatever it says. Hide the field rather than let it suggest an
     // effect it does not have. The value is kept, so unticking restores it.
     el.querySelector(".h_orderlbl").hidden = el.querySelector(".h_this").checked;
-    // A Backup Server is never part of a PVE cluster, so the whole group is PVE-only.
+    // Only a PVE node is part of a PVE cluster, so the whole group is PVE-only.
     // Unlike "this host" the values are NOT cleared: switching a card back to PVE should
     // find the cluster settings as they were.
-    el.querySelector(".clusterbox").hidden = pbs;
+    el.querySelector(".clusterbox").hidden = notPve;
     // The sub-switches only mean anything once the host is marked as a cluster member.
     el.querySelector(".h_clusteropts").hidden = !el.querySelector(".h_cluster").checked;
     // The Ceph note describes what the tick does; showing it while the tick is off would
@@ -1348,6 +1374,20 @@ function addHostRow(h, isNew, open) {
   el.querySelector(".h_name").oninput = () => { updSum(); drawConfigTopology(); syncSites(); };
   el.querySelector(".h_site").oninput = () => { updSum(); syncSites(); syncClusterThresholds(); };
   el.querySelector(".h_url").oninput = syncDuplicateUrls;
+  el.querySelector(".h_ssh_host").oninput = syncDuplicateUrls;
+  el.querySelector(".h_ssh_port").oninput = syncDuplicateUrls;
+  // Forgetting the pinned key is the deliberate way through "host key does not match"
+  // after a reinstall: the next test records the new one.
+  el.querySelector(".h_ssh_forget").onclick = () => { el.querySelector(".h_ssh_host_key").value = ""; };
+  el.querySelector(".h_ssh_showkey").onclick = async (ev) => {
+    ev.preventDefault();
+    const pre = el.querySelector(".h_ssh_pubkey");
+    if (!pre.hidden) { pre.hidden = true; return; }
+    try {
+      pre.textContent = (await api("/api/linux/ssh-key")).public_key;
+    } catch (e) { pre.textContent = "✗ " + e.message; }
+    pre.hidden = false;
+  };
   el.querySelector(".h_this").onchange = () => { syncFlags(); drawConfigTopology(); };
   el.querySelector(".h_cluster").onchange = () => { syncFlags(); syncClusterThresholds(); };
   el.querySelector(".h_cluster_ceph").onchange = () => { syncFlags(); syncClusterThresholds(); };
@@ -1370,8 +1410,10 @@ function addHostRow(h, isNew, open) {
     const ty = el.querySelector(".h_type").value;
     const urlEl = el.querySelector(".h_url");
     const known = Object.values(HOST_DEFAULT_PORTS).map(String);
-    urlEl.value = urlEl.value.replace(/:(\d+)\/?$/, (m, port) =>
-      known.includes(port) ? ":" + HOST_DEFAULT_PORTS[ty] : m);
+    if (HOST_DEFAULT_PORTS[ty]) {
+      urlEl.value = urlEl.value.replace(/:(\d+)\/?$/, (m, port) =>
+        known.includes(port) ? ":" + HOST_DEFAULT_PORTS[ty] : m);
+    }
     toggleHostType();
     drawConfigTopology();
     syncDuplicateUrls();
@@ -1387,16 +1429,25 @@ $("addHostBtn").onclick = () => { addHostRow({}, true, true); renderHostUpsCheck
 // addressed by the configured node name, because PVE's proxying is then the only thing
 // telling the entries apart. Flagged while editing, and again by the self-test for configs
 // that arrive by backup import and never pass through this form.
+// Mirrors HostConfig.address: the API URL, or ssh://host:port for a Linux target.
+function hostAddress(tr) {
+  if (tr.querySelector(".h_type").value === "linux") {
+    const h = tr.querySelector(".h_ssh_host").value.trim().toLowerCase();
+    return h ? `ssh://${h}:${Number(tr.querySelector(".h_ssh_port").value || 22)}` : "";
+  }
+  return tr.querySelector(".h_url").value.trim().replace(/\/+$/, "").toLowerCase();
+}
+
 function syncDuplicateUrls() {
   const rows = Array.from(document.querySelectorAll("#hostRows .host-cfg"));
   const count = {};
   rows.forEach((tr) => {
     if (!tr.querySelector(".h_enabled").checked) return;
-    const url = tr.querySelector(".h_url").value.trim().replace(/\/+$/, "").toLowerCase();
+    const url = hostAddress(tr);
     if (url) count[url] = (count[url] || 0) + 1;
   });
   rows.forEach((tr) => {
-    const url = tr.querySelector(".h_url").value.trim().replace(/\/+$/, "").toLowerCase();
+    const url = hostAddress(tr);
     const dupe = tr.querySelector(".h_enabled").checked && count[url] > 1;
     tr.querySelector(".h_dupurl").hidden = !dupe;
   });
@@ -1474,6 +1525,11 @@ function hostFromRow(tr) {
     })(),
     cluster_ha_disarm: tr.querySelector(".h_cluster_ha_disarm").checked,
     cluster_site: tr.querySelector(".h_site").value.trim(),
+    // Linux (SSH) target. Sent for every type, like the cluster fields above.
+    ssh_host: tr.querySelector(".h_ssh_host").value.trim(),
+    ssh_port: Number(tr.querySelector(".h_ssh_port").value || 22),
+    ssh_user: tr.querySelector(".h_ssh_user").value.trim(),
+    ssh_host_key: tr.querySelector(".h_ssh_host_key").value.trim(),
   };
 }
 
@@ -1542,6 +1598,10 @@ async function testHost(el) {
   try {
     const r = await api("/api/test/host", "POST", hostFromRow(el));
     msg.textContent = (r.ok ? "✓ " : "✗ ") + r.message;
+    // Pin the host key on the first good test; never overwrite a pinned one silently —
+    // a mismatch already failed the test, and "Forget" is the deliberate way out.
+    const hk = el.querySelector(".h_ssh_host_key");
+    if (r.ok && r.host_key && !hk.value.trim()) hk.value = r.host_key;
     applyNodeState(msg, r.node_state);
     applyNodeCheck(el, msg, r.node_check);
     const c = r.cluster;
@@ -1971,6 +2031,13 @@ function incompleteCards() {
       return;
     }
     if (!el.querySelector(".h_enabled").checked) return;
+    if (el.querySelector(".h_type").value === "linux") {
+      // No secret on a Linux card (the appliance key is shared), so the address is all.
+      if (!el.querySelector(".h_ssh_host").value.trim()) {
+        bad.push([el, t("save.needHostSsh", { who })]);
+      }
+      return;
+    }
     if (!el.querySelector(".h_url").value.trim()) {
       bad.push([el, t("save.needHostUrl", { who })]);
     } else if (!el.querySelector(".h_token_id").value.trim()) {

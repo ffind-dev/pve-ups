@@ -447,6 +447,50 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
           (its own PVE-UPS instance, reachable only from a separate management segment), or
           let it ride out short outages on its own UPS runtime.</span>
         </div>
+        <h3 id="linux-ssh">Linux servers without Proxmox (SSH)</h3>
+        <p>Host type <b>Linux server (SSH)</b> shuts down any Linux machine that is fed by
+        the same UPS — GPU nodes, a NAS, a plain Debian or RHEL box. There is no API on such
+        a machine, so the appliance logs in over SSH with <b>its own key</b>, generated on
+        first use and kept in <code>/var/lib/pve-usv/ssh/</code>. Thresholds, order,
+        dry-run, the self-test and webhooks apply exactly as for a Proxmox node.</p>
+        <ol>
+          <li>Add a host card, pick <b>Linux server (SSH)</b>, enter the address.</li>
+          <li>Click <b>Download setup script</b>. It already contains this appliance's
+          public key.</li>
+          <li>Copy it to the server and run it once as root:
+          <code>sh pve-ups-linux-setup.sh</code> (optionally
+          <code>--from 10.0.0.50</code> to accept the key only from the appliance's
+          address).</li>
+          <li>Press <b>Test</b>. The first good test records the server's host key; save the
+          card to pin it.</li>
+        </ol>
+        <p>What the script sets up, and why it is no more than a power button:</p>
+        <ul>
+          <li>A system account <code>upsshutdown</code> without a password.</li>
+          <li>The key, in a root-owned file, with <code>restrict,command="…"</code>: no
+          shell, no PTY, no forwarding. Whatever is sent, only
+          <code>pve-ups test</code> and <code>pve-ups shutdown</code> do anything.</li>
+          <li>One sudo rule, <code>/etc/sudoers.d/pve-ups</code>, for one root-owned
+          script, <code>/usr/local/sbin/pve-ups-poweroff --schedule</code>. “Test” checks
+          that rule — the counterpart of the <code>Sys.PowerMgmt</code> check.</li>
+          <li><b>Pre-shutdown hooks</b>: executable files in
+          <code>/etc/pve-ups/pre-shutdown.d/</code> run as root, in name order, before the
+          power-off — stop containers, drain a Slurm node, signal a training job to write
+          a checkpoint. Each gets 120&nbsp;s (<code>HOOK_TIMEOUT</code> in
+          <code>/etc/pve-ups/remote.conf</code>); a failing hook is logged and skipped,
+          never blocking the shutdown.</li>
+        </ul>
+        <p><code>sh pve-ups-linux-setup.sh --uninstall</code> removes everything again.</p>
+        <div class="callout info">
+          <span><b>GPU nodes:</b> give them the lowest <b>order</b> number. They draw the
+          most power, so taking them down first buys the remaining hosts battery time. Keep
+          the hooks' total well inside the runtime the UPS reports.</span>
+        </div>
+        <div class="callout warn">
+          <span>If a test answers “host key does not match the pinned one”, the server was
+          reinstalled — or it is not the machine that was configured. Only after checking,
+          press <b>Forget key</b>, test again and save.</span>
+        </div>
       </section>
 
       <section class="card" id="snmp">

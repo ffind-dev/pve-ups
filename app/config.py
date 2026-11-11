@@ -305,6 +305,7 @@ class HostType(str, Enum):
 
     pve = "pve"  # Proxmox VE node
     pbs = "pbs"  # Proxmox Backup Server
+    linux = "linux"  # any Linux server, shut down over SSH (see app/linuxssh.py)
 
 
 class HostConfig(BaseModel):
@@ -358,6 +359,28 @@ class HostConfig(BaseModel):
     def api_node(self) -> str:
         """The ``{node}`` path segment of the shutdown call."""
         return self.name
+
+    @property
+    def address(self) -> str:
+        """Where the shutdown goes, in a form two entries can be compared on.
+
+        The API URL for the Proxmox products; a target that is not reached over an API
+        overrides it. duplicate_api_urls() compares this, so a second SSH entry pointing
+        at the same machine is caught by the same check as a duplicated PVE URL.
+        """
+        return self.api_url
+
+    def missing_settings(self) -> list[str]:
+        """The settings without which a shutdown cannot reach this target (see
+        AppConfig.incomplete_host). Per type, because each one is reached differently."""
+        missing = []
+        if not self.api_url.strip():
+            missing.append("no API URL")
+        if not self.token_id.strip():
+            missing.append("no API token ID")
+        if not self.token_secret.get_secret_value():
+            missing.append("no API token secret")
+        return missing
 
     @classmethod
     def secret_fields(cls) -> dict[str, str]:
@@ -452,13 +475,64 @@ class PbsHostConfig(HostConfig):
         return "localhost"
 
 
+class LinuxHostConfig(HostConfig):
+    """Any Linux server without a Proxmox API — a GPU box, a NAS, a plain Debian host.
+
+    Shut down over SSH with the appliance's own key (see app/linuxssh.py). The key in the
+    target's authorized_keys is locked to one forced command, and that command may only
+    run one root-owned script through sudo, so the appliance can power the machine off
+    and nothing else: the SSH counterpart of a token that carries only Sys.PowerMgmt.
+
+    No per-host secret: every Linux target trusts the same appliance key, whose private
+    half never leaves the appliance's state directory. The API fields inherited from
+    HostConfig stay empty and unused.
+    """
+
+    type: Literal["linux"] = "linux"
+    api_url: str = ""  # unused; overridden only so it is no longer required
+
+    ssh_host: str = ""  # address or DNS name of the server
+    ssh_port: int = Field(default=22, ge=1, le=65535)
+    ssh_user: str = "upsshutdown"  # the account the setup script creates
+    # The server's host key as "<algorithm> <base64>", pinned on the first successful
+    # test. Empty means "not pinned yet": the connection is then accepted, because the
+    # only thing a man in the middle could learn from it is the word "shutdown" — but
+    # once pinned, a different key is refused (the machine was reinstalled, or it is not
+    # the machine that was configured).
+    ssh_host_key: str = ""
+
+    @field_validator("ssh_host", "ssh_user", "ssh_host_key", mode="before")
+    @classmethod
+    def _strip(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @property
+    def address(self) -> str:
+        return f"ssh://{self.ssh_host}:{self.ssh_port}" if self.ssh_host else ""
+
+    def missing_settings(self) -> list[str]:
+        missing = []
+        if not self.ssh_host:
+            missing.append("no SSH address")
+        if not self.ssh_user:
+            missing.append("no SSH user")
+        return missing
+
+    @classmethod
+    def secret_fields(cls) -> dict[str, str]:
+        return {}
+
+
 # Discriminated union of every supported shutdown target. Adding a type means: a model
 # here, a branch in app/targets.py, an entry in HostType and the matching i18n keys.
-ShutdownTarget = Annotated[Union[PveHostConfig, PbsHostConfig], Field(discriminator="type")]
+ShutdownTarget = Annotated[
+    Union[PveHostConfig, PbsHostConfig, LinuxHostConfig], Field(discriminator="type")
+]
 
 TARGET_MODELS: dict[str, type[HostConfig]] = {
     "pve": PveHostConfig,
     "pbs": PbsHostConfig,
+    "linux": LinuxHostConfig,
 }
 
 
@@ -1065,14 +1139,7 @@ class AppConfig(BaseModel):
         """
         if not host.enabled:
             return ""
-        missing = []
-        if not host.api_url.strip():
-            missing.append("no API URL")
-        if not host.token_id.strip():
-            missing.append("no API token ID")
-        if not host.token_secret.get_secret_value():
-            missing.append("no API token secret")
-        return ", ".join(missing)
+        return ", ".join(host.missing_settings())
 
     def ordered_hosts(self) -> list[HostConfig]:
         """Enabled hosts in shutdown order; the appliance's own host always last."""
@@ -1130,7 +1197,7 @@ class AppConfig(BaseModel):
         seen: dict[str, int] = {}
         for host in self.hosts:
             if host.enabled:
-                key = _norm_api_url(host.api_url)
+                key = _norm_api_url(host.address)
                 seen[key] = seen.get(key, 0) + 1
         return sorted(url for url, count in seen.items() if url and count > 1)
 
@@ -1142,7 +1209,7 @@ class AppConfig(BaseModel):
         name (see app/proxmox.py). Where a URL serves several entries, PVE's proxying is
         the only thing that tells them apart, so the name has to stay in the path.
         """
-        return _norm_api_url(host.api_url) not in self.duplicate_api_urls()
+        return _norm_api_url(host.address) not in self.duplicate_api_urls()
 
 
 def _norm_api_url(url: str) -> str:

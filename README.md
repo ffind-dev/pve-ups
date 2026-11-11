@@ -8,7 +8,7 @@ and no config files.**
 PVE-UPS monitors one or more UPS devices — **with an SNMP network card (standard RFC 1628
 or a vendor MIB: APC PowerNet, CyberPower)** or **through a NUT server**, which is how USB and
 serial UPS devices are read — and, on a power outage, shuts down one or more **Proxmox VE
-hosts** (and, if you want, a **Proxmox Backup Server**) in an orderly fashion. The modern
+hosts** (and, if you want, a **Proxmox Backup Server** or **plain Linux servers** over SSH) in an orderly fashion. The modern
 replacement for vendor-locked appliances such as APC PowerChute Network Shutdown.
 Everything is configured through a **web wizard**; monitoring is available as **REST/JSON**.
 
@@ -265,13 +265,37 @@ from Proxmox VE and explain the commands above:
 > instance, reachable only from a separate management segment), or let it ride out short
 > outages on its own UPS runtime.
 
+## Linux servers without Proxmox (SSH)
+
+GPU nodes, a NAS or any other Linux machine on the same UPS can be shut down too: host
+type **Linux server (SSH)**. Such a machine has no API, so the appliance logs in over SSH
+with **its own ed25519 key** (generated on first use in `/var/lib/pve-usv/ssh/`). Thresholds,
+order, dry-run, the daily self-test and webhooks work exactly as for a Proxmox node.
+
+1. Add a host card, choose **Linux server (SSH)**, enter the address.
+2. Click **Download setup script** — it already carries this appliance's public key.
+3. Run it once as root on the server: `sh pve-ups-linux-setup.sh` (optionally
+   `--from <appliance-ip>`).
+4. Press **Test**: it checks the login and the sudo rule and records the server's host key,
+   which is pinned when the card is saved.
+
+The key is no more than a power button: it lives in a root-owned `authorized_keys` file
+with `restrict,command="…"` (no shell, no PTY, no forwarding), and the forced command
+understands only `pve-ups test` and `pve-ups shutdown`. The account's single sudo rule
+allows one root-owned script, which runs the **pre-shutdown hooks** in
+`/etc/pve-ups/pre-shutdown.d/` (stop containers, drain Slurm, checkpoint a training job —
+120 s each, failures never block the shutdown) and then powers off. `--uninstall` removes
+everything. Tip: give GPU nodes the lowest order number — they draw the most power, so
+taking them down first buys the other hosts battery time.
+
 ## Features
 
 - **Multiple UPS devices** per instance with host↔UPS mapping and per-host logic
   (**AND** = redundant power supplies, **OR** = split load), including a live feed diagram.
-- **Two target types**, mixable in one instance: **Proxmox VE** nodes and a **Proxmox
-  Backup Server** — selected per host entry, each with its own token scheme and privilege
-  check (but see the warning above before attaching a PBS in production).
+- **Three target types**, mixable in one instance: **Proxmox VE** nodes, a **Proxmox
+  Backup Server** — each with its own token scheme and privilege check (but see the warning
+  above before attaching a PBS in production) — and **plain Linux servers** over SSH with a
+  key locked to a forced command, including pre-shutdown hooks.
 - **Two UPS sources**, freely mixable in one instance:
   - **SNMP v1/v2c and v3** (authPriv), read-only. Reads the standard RFC 1628 UPS MIB or a
     **vendor MIB** — currently **APC PowerNet**, which is what makes APC cards work that
@@ -446,7 +470,7 @@ PVE_USV_CONFIG=./dev-config.yaml PVE_USV_DB=./dev-events.db python -m app.main
   down without it and the preparation waits for the last room. That preparation is **Beta**
   in 4.0.0: the mechanism verifies every step and defaults to the safe choices, but it has
   seen few real clusters so far.
-- Shutdown targets are **Proxmox VE and Proxmox Backup Server**. Proxmox Mail Gateway and
+- Shutdown targets are **Proxmox VE, Proxmox Backup Server and Linux over SSH**. Proxmox Mail Gateway and
   Datacenter Manager are not implemented: each speaks its own token scheme, and shipping
   untested support would be worse than none.
 - Reads the standard RFC 1628 UPS MIB, the APC PowerNet and CyberPower MIBs, or a NUT

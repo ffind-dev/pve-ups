@@ -36,6 +36,7 @@ dependencies = [
     "passlib[argon2]>=1.7",  # UI password hashing
     "itsdangerous>=2.1",     # signed session cookies
     "python-multipart>=0.0.9",  # multipart form parsing for the update upload
+    "asyncssh>=2.14",
 ]
 
 [project.optional-dependencies]
@@ -68,4 +69,4 @@ packages = ["app"]
 version = { attr = "app.__version__" }
 
 [tool.setuptools.package-data]
-app = ["web/*", "web/i18n/*"]
+app = ["web/*", "web/i18n/*", "remote/*"]

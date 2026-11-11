@@ -57,7 +57,7 @@ from .config import (
 from .engine import Engine, _hostname
 # ``cluster`` and ``proxmox`` are PVE-specific on purpose: both back wizard checks
 # that only exist for a Proxmox VE node. Shutdowns still go through ``targets``.
-from . import cluster, history, notify, proxmox, sources, targets
+from . import cluster, history, linuxssh, notify, proxmox, sources, targets
 
 log = logging.getLogger("pve-usv")
 
@@ -1051,7 +1051,39 @@ async def api_test_host(incoming: dict):
         # None for non-PVE targets; "readable": false means the API would not name its
         # nodes, which is explicitly NOT a verdict on the configured name.
         "node_check": node_check,
+        # SSH targets: the server's host key, which the card pins after a good test.
+        "host_key": result.host_key,
     }
+
+
+def _ssh_key_or_503() -> str:
+    try:
+        return linuxssh.public_key_line()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"The appliance SSH key cannot be created: {exc}"
+        )
+
+
+@app.get("/api/linux/ssh-key", dependencies=[Depends(require_auth)])
+def api_linux_ssh_key():
+    """The appliance's public SSH key, generated on first request (see app/linuxssh.py).
+
+    Behind the login although a public key is no secret: the setup script below is what
+    the card offers, and both belong to configuring the appliance.
+    """
+    return {"public_key": _ssh_key_or_503()}
+
+
+@app.get("/api/linux/setup-script", dependencies=[Depends(require_auth)])
+def api_linux_setup_script():
+    """The target-side setup script with this appliance's public key filled in."""
+    _ssh_key_or_503()
+    return Response(
+        content=linuxssh.setup_script(),
+        media_type="text/x-shellscript; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="pve-ups-linux-setup.sh"'},
+    )
 
 
 @app.post("/api/test/webhook", dependencies=[Depends(require_auth)])

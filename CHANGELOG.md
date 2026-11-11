@@ -10,6 +10,19 @@ reads it dynamically. On every release: bump `__version__` **and** add a section
 
 ## [Unreleased]
 
+### Added
+- **Linux servers without Proxmox as shutdown targets** (host type `linux`): GPU nodes, a
+  NAS or any Linux machine on the same UPS is shut down over SSH with the appliance's own
+  ed25519 key, generated on first use in `/var/lib/pve-usv/ssh/`. A setup script, offered
+  for download on the host card with the public key filled in, creates a password-less
+  account, locks the key to a forced command (`restrict`, root-owned `authorized_keys`)
+  and grants one sudo rule for one root-owned power-off script, which runs the
+  pre-shutdown hooks in `/etc/pve-ups/pre-shutdown.d/` first. "Test" checks the login and
+  that sudo rule and records the server's host key, which is pinned from then on.
+  Thresholds, order, dry-run, the self-test and webhooks apply unchanged. New settings per
+  host: `ssh_host`, `ssh_port` (22), `ssh_user` (`upsshutdown`), `ssh_host_key` (empty);
+  existing configs are unaffected. New dependency: `asyncssh`.
+
 ## [4.4.0] - 2026-11-03
 
 A feature release for clusters spread over two rooms: a room that loses power alone is

@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import asyncio
 
-from . import pbs, proxmox
-from .config import HostConfig, PbsHostConfig, PveHostConfig
+from . import linuxssh, pbs, proxmox
+from .config import HostConfig, LinuxHostConfig, PbsHostConfig, PveHostConfig
 from .proxmox import NodeVerdict, TestResult
 
 # Headroom over the caller's timeout: the client's own httpx timeout should be what
@@ -38,10 +38,13 @@ async def shutdown(
 
     ``use_localhost`` only means anything to PVE: it addresses the node behind the entry's
     API URL directly instead of by its configured name (see proxmox.shutdown_node). PBS
-    ignores the segment entirely and always has, so the flag never reaches it.
+    ignores the segment entirely and always has, and an SSH target has no node path at
+    all, so the flag never reaches either.
     """
     if isinstance(host, PbsHostConfig):
         call = pbs.shutdown_node(host, timeout)
+    elif isinstance(host, LinuxHostConfig):
+        call = linuxssh.shutdown_node(host, timeout)
     elif isinstance(host, PveHostConfig):
         call = proxmox.shutdown_node(host, timeout, use_localhost=use_localhost)
     else:
@@ -59,8 +62,8 @@ async def verify_node(host: HostConfig, timeout: float = 10.0) -> NodeVerdict:
     """Check a target's configured node name against its API. Never raises, always bounded.
 
     Only Proxmox VE has a node name that can be wrong. PBS ignores the path segment
-    entirely (see PbsHostConfig.api_node), so there is nothing to verify and nothing to
-    report — "unverified" is the honest answer, not a defect.
+    entirely (see PbsHostConfig.api_node) and a Linux target is reached by address, so
+    there is nothing to verify and nothing to report — "unverified" is the honest answer, not a defect.
     """
     if not isinstance(host, PveHostConfig):
         return NodeVerdict(state="unverified")
@@ -79,6 +82,8 @@ async def test_connection(host: HostConfig, timeout: float = 10.0) -> TestResult
     """Verify token + power-management privilege. Never raises, always bounded."""
     if isinstance(host, PbsHostConfig):
         call = pbs.test_connection(host, timeout)
+    elif isinstance(host, LinuxHostConfig):
+        call = linuxssh.test_connection(host, timeout)
     elif isinstance(host, PveHostConfig):
         call = proxmox.test_connection(host, timeout)
     else:

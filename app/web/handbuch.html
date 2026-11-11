@@ -456,6 +456,55 @@ proxmox-backup-manager acl update /system/status Admin --auth-id 'ups@pbs!shutdo
           getrennten Management-Segment erreichbar) oder ihn kurze Ausfälle auf seiner
           eigenen USV-Laufzeit aussitzen lassen.</span>
         </div>
+        <h3 id="linux-ssh">Linux-Server ohne Proxmox (SSH)</h3>
+        <p>Der Host-Typ <b>Linux-Server (SSH)</b> fährt jede Linux-Maschine herunter, die an
+        derselben USV hängt — GPU-Knoten, ein NAS, ein einfacher Debian- oder RHEL-Server.
+        Eine API gibt es dort nicht; die Appliance meldet sich deshalb per SSH mit
+        <b>ihrem eigenen Schlüssel</b> an, der beim ersten Bedarf erzeugt und in
+        <code>/var/lib/pve-usv/ssh/</code> abgelegt wird. Schwellen, Reihenfolge, Dry-Run,
+        Selbsttest und Webhooks gelten genau wie für einen Proxmox-Knoten.</p>
+        <ol>
+          <li>Host-Karte anlegen, <b>Linux-Server (SSH)</b> wählen, Adresse eintragen.</li>
+          <li><b>Einrichtungsskript herunterladen</b> klicken. Es enthält bereits den
+          öffentlichen Schlüssel dieser Appliance.</li>
+          <li>Auf den Server kopieren und dort einmal als root ausführen:
+          <code>sh pve-ups-linux-setup.sh</code> (optional
+          <code>--from 10.0.0.50</code>, damit der Schlüssel nur von der Adresse der
+          Appliance akzeptiert wird).</li>
+          <li><b>Testen</b> drücken. Der erste erfolgreiche Test übernimmt den
+          Host-Schlüssel des Servers; mit dem Speichern wird er festgeschrieben.</li>
+        </ol>
+        <p>Was das Skript einrichtet — und warum es nicht mehr als ein Ausschalter ist:</p>
+        <ul>
+          <li>Ein Systemkonto <code>upsshutdown</code> ohne Passwort.</li>
+          <li>Den Schlüssel in einer root-eigenen Datei, mit
+          <code>restrict,command="…"</code>: keine Shell, kein PTY, kein Forwarding. Egal
+          was gesendet wird, nur <code>pve-ups test</code> und
+          <code>pve-ups shutdown</code> bewirken etwas.</li>
+          <li>Eine sudo-Regel, <code>/etc/sudoers.d/pve-ups</code>, für genau ein
+          root-eigenes Skript, <code>/usr/local/sbin/pve-ups-poweroff --schedule</code>.
+          „Testen“ prüft diese Regel — das Gegenstück zur Prüfung auf
+          <code>Sys.PowerMgmt</code>.</li>
+          <li><b>Pre-Shutdown-Hooks</b>: ausführbare Dateien in
+          <code>/etc/pve-ups/pre-shutdown.d/</code> laufen als root in Namensreihenfolge vor
+          dem Ausschalten — Container stoppen, einen Slurm-Knoten drainen, einem
+          Trainingsjob das Signal zum Checkpoint geben. Jeder bekommt 120&nbsp;s
+          (<code>HOOK_TIMEOUT</code> in <code>/etc/pve-ups/remote.conf</code>); ein
+          fehlschlagender Hook wird protokolliert und übersprungen, er hält den Shutdown nie
+          auf.</li>
+        </ul>
+        <p><code>sh pve-ups-linux-setup.sh --uninstall</code> entfernt alles wieder.</p>
+        <div class="callout info">
+          <span><b>GPU-Knoten:</b> die niedrigste <b>Reihenfolge</b>-Nummer geben. Sie
+          ziehen die meiste Leistung; gehen sie zuerst, gewinnen die übrigen Hosts
+          Akkulaufzeit. Die Summe der Hooks deutlich unter der gemeldeten Restlaufzeit
+          halten.</span>
+        </div>
+        <div class="callout warn">
+          <span>Meldet ein Test „Host key … does not match the pinned one“, wurde der Server
+          neu installiert — oder es ist nicht die konfigurierte Maschine. Erst nach Prüfung
+          <b>Schlüssel vergessen</b> drücken, erneut testen und speichern.</span>
+        </div>
       </section>
 
       <section class="card" id="snmp">
