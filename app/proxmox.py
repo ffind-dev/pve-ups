@@ -37,6 +37,9 @@ class TestResult:
     # field rather than part of ``ok`` because the two answer different questions — the
     # credentials can be perfect while the name points at nothing.
     node_state: str = "unverified"
+    # SSH targets only: the server's host key as "<algorithm> <base64>", so the UI can pin
+    # it after the first successful test. Empty for every API target.
+    host_key: str = ""
 
 
 @dataclass

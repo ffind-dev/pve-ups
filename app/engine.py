@@ -2228,7 +2228,7 @@ class Engine:
             self._dup_url_warned.add(url)
             names = [
                 h.name for h in self.cfg.hosts
-                if h.enabled and h.api_url.strip().rstrip("/").lower() == url
+                if h.enabled and h.address.strip().rstrip("/").lower() == url
             ]
             await self._hint(
                 "Several hosts share one API URL",

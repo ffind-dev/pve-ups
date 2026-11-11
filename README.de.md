@@ -8,7 +8,7 @@ Konfigurationsdateien.**
 PVE-UPS überwacht eine oder mehrere USVs — **mit SNMP-Netzwerkkarte (Standard RFC 1628
 oder Hersteller-MIB: APC PowerNet, CyberPower)** oder **über einen NUT-Server**, worüber USB- und
 seriell angeschlossene USVs gelesen werden — und fährt bei Stromausfall einen oder mehrere
-**Proxmox-VE-Hosts** (auf Wunsch auch einen **Proxmox Backup Server**) geordnet herunter.
+**Proxmox-VE-Hosts** (auf Wunsch auch einen **Proxmox Backup Server** oder **einfache Linux-Server** per SSH) geordnet herunter.
 Der moderne Ersatz für herstellergebundene Appliances wie APC PowerChute Network Shutdown.
 Die komplette Einrichtung läuft über einen **Web-Wizard**; Monitoring gibt es als
 **REST/JSON**.
@@ -278,14 +278,40 @@ unterscheiden sich von Proxmox VE und erklären die Befehle oben:
 > Management-Segment erreichbar) oder ihn kurze Ausfälle auf seiner eigenen USV-Laufzeit
 > aussitzen lassen.
 
+## Linux-Server ohne Proxmox (SSH)
+
+Auch GPU-Knoten, ein NAS oder jede andere Linux-Maschine an derselben USV lässt sich
+herunterfahren: Host-Typ **Linux-Server (SSH)**. Eine API gibt es dort nicht; die Appliance
+meldet sich per SSH mit **ihrem eigenen ed25519-Schlüssel** an (beim ersten Bedarf in
+`/var/lib/pve-usv/ssh/` erzeugt). Schwellen, Reihenfolge, Dry-Run, täglicher Selbsttest und
+Webhooks funktionieren genau wie bei einem Proxmox-Knoten.
+
+1. Host-Karte anlegen, **Linux-Server (SSH)** wählen, Adresse eintragen.
+2. **Einrichtungsskript herunterladen** — es enthält bereits den öffentlichen Schlüssel
+   dieser Appliance.
+3. Einmal als root auf dem Server ausführen: `sh pve-ups-linux-setup.sh` (optional
+   `--from <appliance-ip>`).
+4. **Testen**: prüft Anmeldung und sudo-Regel und übernimmt den Host-Schlüssel des Servers,
+   der beim Speichern der Karte festgeschrieben wird.
+
+Der Schlüssel ist nicht mehr als ein Ausschalter: Er liegt in einer root-eigenen
+`authorized_keys`-Datei mit `restrict,command="…"` (keine Shell, kein PTY, kein Forwarding),
+und das Forced Command versteht nur `pve-ups test` und `pve-ups shutdown`. Die einzige
+sudo-Regel des Kontos erlaubt ein root-eigenes Skript, das die **Pre-Shutdown-Hooks** in
+`/etc/pve-ups/pre-shutdown.d/` ausführt (Container stoppen, Slurm drainen, Checkpoint eines
+Trainingsjobs — je 120 s, Fehler halten den Shutdown nie auf) und dann ausschaltet.
+`--uninstall` entfernt alles. Tipp: GPU-Knoten die niedrigste Reihenfolge-Nummer geben — sie
+ziehen die meiste Leistung, und gehen sie zuerst, gewinnen die übrigen Hosts Akkulaufzeit.
+
 ## Funktionen
 
 - **Mehrere USVs** pro Instanz mit Host↔USV-Zuordnung und Logik pro Host
   (**UND** = redundante Netzteile, **ODER** = aufgeteilte Last), inkl. Live-Schaubild.
-- **Zwei Ziel-Typen**, in einer Instanz mischbar: **Proxmox-VE**-Knoten und ein **Proxmox
-  Backup Server** — je Host-Eintrag wählbar, jeweils mit eigenem Token-Schema und eigener
-  Rechteprüfung (vor dem Anbinden eines PBS in Produktion aber bitte die Warnung oben
-  lesen).
+- **Drei Ziel-Typen**, in einer Instanz mischbar: **Proxmox-VE**-Knoten, ein **Proxmox
+  Backup Server** — jeweils mit eigenem Token-Schema und eigener Rechteprüfung (vor dem
+  Anbinden eines PBS in Produktion aber bitte die Warnung oben lesen) — und **einfache
+  Linux-Server** per SSH mit einem auf ein Forced Command festgelegten Schlüssel, inklusive
+  Pre-Shutdown-Hooks.
 - **Zwei USV-Quellen**, in einer Instanz frei mischbar:
   - **SNMP v1/v2c und v3** (authPriv), nur lesend. Liest die Standard-RFC-1628-UPS-MIB
     oder eine **Hersteller-MIB** — derzeit **APC PowerNet**, womit APC-Karten
@@ -477,7 +503,7 @@ PVE_USV_CONFIG=./dev-config.yaml PVE_USV_DB=./dev-events.db python -m app.main
   heruntergefahren, und die Vorbereitung wartet auf den letzten Raum. Diese Vorbereitung ist
   in 4.0.0 **Beta**: Der Mechanismus überprüft jeden Schritt und wählt im Zweifel die
   sichere Variante, hat bisher aber wenige echte Cluster gesehen.
-- Shutdown-Ziele sind **Proxmox VE und Proxmox Backup Server**. Proxmox Mail Gateway und
+- Shutdown-Ziele sind **Proxmox VE, Proxmox Backup Server und Linux per SSH**. Proxmox Mail Gateway und
   Datacenter Manager sind nicht umgesetzt: beide sprechen ihr eigenes Token-Schema, und
   ungetesteter Support wäre schlechter als keiner.
 - Liest die Standard-RFC-1628-UPS-MIB, die MIBs von APC PowerNet und CyberPower oder die
